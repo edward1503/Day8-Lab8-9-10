@@ -88,11 +88,43 @@ def score_faithfulness(
 
     Trả về dict với: score (1-5) và notes (lý do)
     """
-    # TODO Sprint 4: Implement scoring
-    # Tạm thời trả về None (yêu cầu chấm thủ công)
+    if not chunks_used:
+        return {"score": 1, "notes": "No chunks retrieved"}
+        
+    context = "\n".join([c["text"] for c in chunks_used])
+    prompt = f"""Given these retrieved chunks:
+{context}
+
+And this answer:
+{answer}
+
+Rate the faithfulness of the answer on a scale of 1-5 based on the provided context.
+5 = completely grounded in the provided context (no made-up information).
+4 = mostly grounded, but 1 minor detail is assumed.
+3 = somewhat grounded, but contains some information not in the context.
+2 = many details are not in the context.
+1 = answer contains entirely made-up information not in the context.
+
+Output only a valid JSON object in this exact format: {{"score": <int>, "reason": "<string>"}}"""
+
+    try:
+        from rag_answer import call_llm
+        result_text = call_llm(prompt)
+        
+        # Parse JSON from result
+        start = result_text.find("{")
+        end = result_text.rfind("}") + 1
+        if start != -1 and end != -1:
+            json_str = result_text[start:end]
+            data = json.loads(json_str)
+            return {"score": data.get("score"), "notes": data.get("reason", "LLM-as-judge executed")}
+            
+    except Exception as e:
+        print(f"[score_faithfulness] Lỗi: {e}")
+        
     return {
         "score": None,
-        "notes": "TODO: Chấm thủ công hoặc implement LLM-as-Judge",
+        "notes": "Lỗi khi gọi LLM chấm điểm",
     }
 
 
@@ -113,9 +145,38 @@ def score_answer_relevance(
 
     TODO Sprint 4: Implement tương tự score_faithfulness
     """
+    prompt = f"""Given this user query:
+{query}
+
+And this answer:
+{answer}
+
+Rate the relevance of the answer to the query on a scale of 1-5.
+5 = answers the query directly and fully.
+4 = answers the query but misses some minor details.
+3 = somewhat relevant but misses the core point.
+2 = partially off-topic.
+1 = completely unrelated to the query.
+
+Output only a valid JSON object in this exact format: {{"score": <int>, "reason": "<string>"}}"""
+
+    try:
+        from rag_answer import call_llm
+        result_text = call_llm(prompt)
+        
+        start = result_text.find("{")
+        end = result_text.rfind("}") + 1
+        if start != -1 and end != -1:
+            json_str = result_text[start:end]
+            data = json.loads(json_str)
+            return {"score": data.get("score"), "notes": data.get("reason", "LLM-as-judge executed")}
+            
+    except Exception as e:
+        print(f"[score_answer_relevance] Lỗi: {e}")
+        
     return {
         "score": None,
-        "notes": "TODO: Implement score_answer_relevance",
+        "notes": "Lỗi khi gọi LLM chấm điểm",
     }
 
 
@@ -198,9 +259,43 @@ def score_completeness(
          Rate completeness 1-5. Are all key points covered?
          Output: {'score': int, 'missing_points': [str]}"
     """
+    if not expected_answer:
+        return {"score": None, "notes": "No expected answer provided"}
+
+    prompt = f"""Compare the model answer with the expected answer.
+    
+Expected Answer:
+{expected_answer}
+
+Model Answer:
+{answer}
+
+Rate the completeness 1-5. Are all key points covered?
+5 = all key points from expected answer are present.
+4 = missing 1 minor point.
+3 = missing some important points.
+2 = missing many important points.
+1 = missing almost all core content.
+
+Output only a valid JSON object in this exact format: {{"score": <int>, "reason": "<string>"}}"""
+
+    try:
+        from rag_answer import call_llm
+        result_text = call_llm(prompt)
+        
+        start = result_text.find("{")
+        end = result_text.rfind("}") + 1
+        if start != -1 and end != -1:
+            json_str = result_text[start:end]
+            data = json.loads(json_str)
+            return {"score": data.get("score"), "notes": data.get("reason", "LLM-as-judge executed")}
+            
+    except Exception as e:
+        print(f"[score_completeness] Lỗi: {e}")
+
     return {
         "score": None,
-        "notes": "TODO: Implement score_completeness (so sánh với expected_answer)",
+        "notes": "Lỗi khi gọi LLM chấm điểm",
     }
 
 
@@ -487,24 +582,22 @@ if __name__ == "__main__":
         baseline_results = []
 
     # --- Chạy Variant (sau khi Sprint 3 hoàn thành) ---
-    # TODO Sprint 4: Uncomment sau khi implement variant trong rag_answer.py
-    # print("\n--- Chạy Variant ---")
-    # variant_results = run_scorecard(
-    #     config=VARIANT_CONFIG,
-    #     test_questions=test_questions,
-    #     verbose=True,
-    # )
-    # variant_md = generate_scorecard_summary(variant_results, VARIANT_CONFIG["label"])
-    # (RESULTS_DIR / "scorecard_variant.md").write_text(variant_md, encoding="utf-8")
+    print("\n--- Chạy Variant ---")
+    variant_results = run_scorecard(
+        config=VARIANT_CONFIG,
+        test_questions=test_questions,
+        verbose=True,
+    )
+    variant_md = generate_scorecard_summary(variant_results, VARIANT_CONFIG["label"])
+    (RESULTS_DIR / "scorecard_variant.md").write_text(variant_md, encoding="utf-8")
 
     # --- A/B Comparison ---
-    # TODO Sprint 4: Uncomment sau khi có cả baseline và variant
-    # if baseline_results and variant_results:
-    #     compare_ab(
-    #         baseline_results,
-    #         variant_results,
-    #         output_csv="ab_comparison.csv"
-    #     )
+    if baseline_results and variant_results:
+        compare_ab(
+            baseline_results,
+            variant_results,
+            output_csv="ab_comparison.csv"
+        )
 
     print("\n\nViệc cần làm Sprint 4:")
     print("  1. Hoàn thành Sprint 2 + 3 trước")

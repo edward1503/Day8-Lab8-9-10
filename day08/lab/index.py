@@ -364,13 +364,6 @@ def list_chunks(db_dir: Path = CHROMA_DB_DIR, n: int = 5) -> None:
 def inspect_metadata_coverage(db_dir: Path = CHROMA_DB_DIR) -> None:
     """
     Kiểm tra phân phối metadata trong toàn bộ index.
-
-    Checklist Sprint 1:
-    - Mọi chunk đều có source?
-    - Có bao nhiêu chunk từ mỗi department?
-    - Chunk nào thiếu effective_date?
-
-    TODO: Implement sau khi build_index() hoàn thành.
     """
     try:
         import chromadb
@@ -380,19 +373,32 @@ def inspect_metadata_coverage(db_dir: Path = CHROMA_DB_DIR) -> None:
 
         print(f"\nTổng chunks: {len(results['metadatas'])}")
 
-        # TODO: Phân tích metadata
-        # Đếm theo department, kiểm tra effective_date missing, v.v.
         departments = {}
+        sources = {}
         missing_date = 0
+        missing_source = 0
+        
         for meta in results["metadatas"]:
             dept = meta.get("department", "unknown")
             departments[dept] = departments.get(dept, 0) + 1
+            
+            src = meta.get("source", "unknown")
+            sources[src] = sources.get(src, 0) + 1
+            if src == "unknown":
+                missing_source += 1
+                
             if meta.get("effective_date") in ("unknown", "", None):
                 missing_date += 1
 
         print("Phân bố theo department:")
         for dept, count in departments.items():
             print(f"  {dept}: {count} chunks")
+            
+        print("\nPhân bố theo nguồn tài liệu (source):")
+        for src, count in sources.items():
+            print(f"  {src}: {count} chunks")
+            
+        print(f"\nChunks thiếu source: {missing_source}")
         print(f"Chunks thiếu effective_date: {missing_date}")
 
     except Exception as e:
