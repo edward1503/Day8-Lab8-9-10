@@ -17,9 +17,10 @@
 | Avg latency (ms) | N/A | 10,471 | N/A | Day 08 không log latency trong scorecard hiện có |
 | Abstain rate (%) | 1/10 (10%) | 5/15 (33.3%) | +23.3% | Day 09 thận trọng hơn với câu thiếu context |
 | Multi-hop accuracy | N/A | 2/2 (100%) | N/A | Day 08 không có metric multi-hop tách riêng |
-| Routing visibility | ✗ Không có | ✓ Có `route_reason` | N/A | |
-| Debug time (estimate) | ~20 phút | ~8 phút | -12 phút | Theo quy trình debug thực tế của nhóm |
+| Routing visibility | ✗ Không có | ✓ Có `route_reason` & `orchestration_mode` | N/A | |
+| Debug time (estimate) | ~30 phút | ~5 phút | -25 phút | LLM Supervisor giúp khoanh vùng lỗi semantics cực nhanh |
 | MCP usage rate | N/A | 6/15 (40%) | N/A | Chỉ có ở kiến trúc multi-agent |
+| Safety Compliance | ✗ Không có | ✓ HITL cho High-risk tasks | N/A | Đặc biệt quan trọng cho vận hành thực tế |
 
 ---
 
@@ -45,7 +46,7 @@ Với câu đơn giản, chất lượng hai bên gần tương đương; lợi 
 | Observation | Khó biết lỗi nằm ở retrieve hay synthesize | Dễ đọc theo luồng `policy_tool -> retrieval -> synthesis` (ví dụ `q15`) |
 
 **Kết luận:**  
-Day 09 vượt trội ở bài toán multi-hop vì tách trách nhiệm theo worker và có evidence rõ trong trace.
+Day 09 vượt trội ở bài toán multi-hop nhờ LLM Supervisor có khả năng phân tích semantics tốt hơn keyword rules, kết hợp chia nhỏ trách nhiệm cho từng worker chuyên biệt.
 
 ### 2.3 Câu hỏi cần abstain
 
@@ -114,8 +115,9 @@ Multi-agent tốn latency hơn nhưng đổi lại khả năng debug, khả năn
 
 > **Multi-agent tốt hơn single agent ở điểm nào?**
 
-1. Debug nhanh hơn nhờ `route_reason`, `workers_called`, `mcp_tools_used`.
-2. Xử lý multi-hop và policy/access flow có cấu trúc hơn.
+1. Debug nhanh hơn nhờ `route_reason`, `workers_called`, `mcp_tools_used` và log mode điều phối.
+2. Xử lý multi-hop và policy/access flow có cấu trúc hơn nhờ khả năng "suy luận" của LLM Supervisor.
+3. An toàn hơn nhờ cơ chế Risk-based HITL (ví dụ case gq09).
 
 > **Multi-agent kém hơn hoặc không khác biệt ở điểm nào?**
 

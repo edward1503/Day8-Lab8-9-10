@@ -10,10 +10,7 @@
 
 > Mô tả ngắn hệ thống của nhóm: chọn pattern gì, gồm những thành phần nào.
 
-**Pattern đã chọn:** Supervisor-Worker  
-**Lý do chọn pattern này (thay vì single agent):**
-
-Nhóm chọn Supervisor-Worker để tách trách nhiệm rõ ràng giữa routing, retrieval, policy checking và synthesis. Với single-agent (Day 08), khi answer sai rất khó xác định lỗi nằm ở retrieval hay generation. Sang Day 09, supervisor quyết định luồng bằng rule-based routing (`supervisor_route`, `route_reason`), worker xử lý độc lập theo contract, và toàn bộ quá trình được log trong trace (`workers_called`, `worker_io_logs`, `mcp_tools_used`). Mô hình này giúp debug nhanh hơn, mở rộng dễ hơn (thêm worker/tool mới), và giảm rủi ro thay đổi dây chuyền khi nâng cấp từng phần.
+Nhóm chọn Supervisor-Worker để tách trách nhiệm rõ ràng giữa routing, retrieval, policy checking và synthesis. Sang Day 09, hệ thống được nâng cấp lên kiến trúc **Hybrid Orchestrator**: Supervisor sử dụng LLM (GPT-4o-mini) để phân tích ý định thay cho rule-based, tích hợp cơ chế **Risk-based HITL** tự động và cơ chế **Fallback** bảo vệ nếu API gặp sự cố. Toàn bộ quá trình được lưu trace chi tiết (`run_id`, `latency_ms`, `timestamp`) giúp quan sát và debug theo thời gian thực.
 
 ---
 
@@ -22,47 +19,56 @@ Nhóm chọn Supervisor-Worker để tách trách nhiệm rõ ràng giữa routi
 > Vẽ sơ đồ pipeline dưới dạng text, Mermaid diagram, hoặc ASCII art.
 > Yêu cầu tối thiểu: thể hiện rõ luồng từ input → supervisor → workers → output.
 
-**Ví dụ (ASCII art):**
-```
 User Request
      │
      ▼
 ┌──────────────┐
-│  Supervisor  │  ← route_reason, risk_high, needs_tool
+│  Supervisor  │ (Hybrid: LLM + Rule Fallback)
 └──────┬───────┘
        │
-   [route_decision]
-       │
-  ┌────┴────────────────────┐
-  │                         │
-  ▼                         ▼
-Retrieval Worker     Policy Tool Worker
-  (evidence)           (policy check + MCP)
-  │                         │
-  └─────────┬───────────────┘
+ [Risk Sensor] ──▶ [HITL: human_review] (Trigger if risk_high)
+       │                    │
+       ▼                    │
+  ┌────┴────────────────────┼─▶ [Supervisor Choice] 
+  │                         │       (route)
+  ▼                         ▼          │
+Retrieval Worker     Policy Tool Worker  │
+  (evidence)           (policy check+MCP)│
+  │                         │           │
+  └─────────┬───────────────┴───────────┘
             │
             ▼
       Synthesis Worker
-        (answer + cite)
+        (Grounded Answer)
             │
             ▼
          Output
-```
 
 **Sơ đồ thực tế của nhóm:**
 
 ```mermaid
 flowchart TD
-    U["User Question"] --> S["Supervisor (graph.py)\n- detect signals\n- set route_reason, risk_high, needs_tool"]
-    S --> R{route_decision}
-    R -->|retrieval_worker| RW["Retrieval Worker\n(workers/retrieval.py)\nDense Chroma retrieval"]
-    R -->|policy_tool_worker| PW["Policy Tool Worker\n(workers/policy_tool.py)\nRule check + MCP calls"]
-    R -->|human_review| H["Human Review (HITL placeholder)"]
-    H --> RW
+    U["User Question"] --> S["Supervisor (graph.py)\n[Hybrid Mode]"]
+    S --> L{Decision Type}
+    L -->|LLM Choice| DR["GPT-4o-mini\n(Semantic Intent)"]
+    L -->|Error Fallback| RB["Keyword Rules\n(Deterministic)"]
+    
+    DR --> RS{Risk Sensor}
+    RB --> RS
+    
+    RS -->|risk_high=True| H["human_review (HITL)\n(Emergency/P1/Night)"]
+    RS -->|risk_high=False| R{Route Decision}
+    
+    H -->|Auto-Approved| R
+    
+    R -->|retrieval_worker| RW["Retrieval Worker\n(ChromaDB Dense)"]
+    R -->|policy_tool_worker| PW["Policy Worker\n(Policy + MCP Tools)"]
+    
     PW --> RW
-    RW --> SW["Synthesis Worker\n(workers/synthesis.py)\nGrounded answer + citation + confidence"]
-    SW --> O["Final Output\nfinal_answer, sources, confidence"]
-    PW -. optional .-> MCP["MCP Server (mcp_server.py)\nsearch_kb / get_ticket_info /\ncheck_access_permission / create_ticket"]
+    RW --> SW["Synthesis Worker\n(Grounded Generation)"]
+    SW --> O["Final Result\n(Answer + Cite + Trace)"]
+    
+    PW -.-> MCP["MCP Server\nsearch_kb / get_ticket / permissions"]
 ```
 
 ---
@@ -71,13 +77,12 @@ flowchart TD
 
 ### Supervisor (`graph.py`)
 
-| Thuộc tính | Mô tả |
-|-----------|-------|
-| **Nhiệm vụ** | Phân tích task, chọn worker route, gắn lý do route và risk signals |
+| **Architecture** | **Hybrid Orchestrator** | 
+| **Nhiệm vụ** | Phân tích task (LLM), chọn worker route, gắn lý do route và risk signals |
 | **Input** | `task`, `history` |
 | **Output** | supervisor_route, route_reason, risk_high, needs_tool |
-| **Routing logic** | Rule-based keyword matching: SLA/ticket -> retrieval, refund/access -> policy_tool, ambiguous error + unclear context -> human_review |
-| **HITL condition** | Trigger khi task có mã lỗi mơ hồ kiểu `ERR-xxx` + tín hiệu ambiguity; hiện tại HITL là placeholder auto-approve |
+| **Routing logic** | Ưu tiên **LLM Classifier** (GPT-4o-mini). Tự động fallback sang **Rule-based keyword matching** nếu API có sự cố. |
+| **HITL condition** | Trigger lập tức khi phát hiện rủi ro cao: Mã lỗi khẩn cấp, sự cố ngoài giờ hành chính (2am), hoặc yêu cầu cấp quyền Critical. |
 
 ### Retrieval Worker (`workers/retrieval.py`)
 
@@ -138,8 +143,9 @@ flowchart TD
 | final_answer | str | Câu trả lời cuối | synthesis ghi |
 | sources | list[str] | Danh sách nguồn dùng để trả lời | synthesis ghi |
 | confidence | float | Mức tin cậy | synthesis ghi |
-| latency_ms | int | Tổng thời gian run | graph ghi |
-| run_id | str | ID duy nhất cho trace file | graph khởi tạo |
+| latency_ms | int | Tổng thời gian run (ms) | graph ghi |
+| run_id | str | ID duy nhất (run_YYYYMMDD_HHMMSS) | graph khởi tạo |
+| timestamp | str | Thời điểm thực thi (ISO) | graph khởi tạo |
 
 ---
 
