@@ -36,19 +36,18 @@ def run_grading():
                 # Chạy pipeline multi-agent
                 result = run_graph(question_text)
                 
-                # Format đúng chuẩn grading yêu cầu
+                # Format đúng chuẩn grading yêu cầu (khác với trace test)
                 record = {
-                    "run_id": result.get("run_id", ""),
-                    "task": question_text,
+                    "id": q_id,
+                    "question": question_text,
+                    "answer": result.get("final_answer", ""),
+                    "sources": result.get("retrieved_sources", []),
                     "supervisor_route": result.get("supervisor_route", ""),
                     "route_reason": result.get("route_reason", ""),
                     "workers_called": result.get("workers_called", []),
                     "mcp_tools_used": [t.get("tool") if isinstance(t, dict) else t for t in result.get("mcp_tools_used", [])],
-                    "retrieved_sources": result.get("retrieved_sources", []),
-                    "final_answer": result.get("final_answer", ""),
                     "confidence": result.get("confidence", 0.0),
                     "hitl_triggered": result.get("hitl_triggered", False),
-                    "latency_ms": result.get("latency_ms", 0),
                     "timestamp": result.get("timestamp", datetime.now().isoformat())
                 }
                 status = "✅ Thành công"
