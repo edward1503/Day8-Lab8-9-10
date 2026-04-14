@@ -4,9 +4,10 @@
 **Thành viên:**
 | Tên | Vai trò | Email |
 |-----|---------|-------|
-| (Nhóm cập nhật) | Supervisor Owner | N/A |
-| (Nhóm cập nhật) | Worker Owner | N/A |
-| (Nhóm cập nhật) | MCP Owner | N/A |
+| Nguyễn Duy Minh Hoàng (2A202600155) | Supervisor Owner | N/A |
+| Đào Anh Quân (2A202600028) | Worker Owner | N/A |
+| Nguyễn Lê Minh Luân (2A202600398) | MCP Owner (Core Architecture) | N/A |
+| Nguyễn Đôn Đức (2A202600145) | MCP Owner (Testing & Integration) | N/A |
 | Vu Quang Phuc (2A202600346) | Trace & Docs Owner | N/A |
 
 **Ngày nộp:** 2026-04-14  
@@ -137,9 +138,10 @@ Trường hợp query đơn giản một tài liệu (single-document), multi-ag
 
 | Thành viên | Phần đã làm | Sprint |
 |------------|-------------|--------|
-| Supervisor Owner | `graph.py`, routing logic, state orchestration | 1 |
-| Worker Owner | `workers/retrieval.py`, `workers/policy_tool.py`, `workers/synthesis.py`, contracts | 2 |
-| MCP Owner | `mcp_server.py`, MCP integration trong policy worker | 3 |
+| Nguyễn Duy Minh Hoàng (2A202600155) | `graph.py`, `supervisor_node()`, `route_decision()`, `AgentState`, `test_routing.py` | 1 |
+| Đào Anh Quân (2A202600028) | `workers/retrieval.py`, `workers/policy_tool.py`, `workers/synthesis.py`, confidence logic, exception handling | 2 |
+| Nguyễn Lê Minh Luân (2A202600398) | `mcp_client.py`, `mcp_protocol.py`, `mcp_http_server.py`, refactor `_call_mcp_tool()` | 3 |
+| Nguyễn Đôn Đức (2A202600145) | `test_mcp_real.py`, `test_db_init.py`, `instruction.md`, MCP integration/deployment verification | 3 |
 | Vu Quang Phuc (2A202600346) | `eval_trace.py`, `docs/*`, `reports/group_report.md`, individual report | 4 |
 
 **Điều nhóm làm tốt:**
