@@ -1,4 +1,4 @@
-# Báo Cáo Cá Nhân — Lab Day 08: RAG Pipeline
+r# Báo Cáo Cá Nhân — Lab Day 08: RAG Pipeline
 
 **Họ và tên:** Nguyễn Lê Minh Luân  
 **Vai trò trong nhóm:** Eval Owner  

@@ -14,9 +14,16 @@ Output (vào AgentState):
 
 Gọi độc lập để test:
     python workers/policy_tool.py
+
+Sprint 3 changes:
+    - _call_mcp_tool now uses MCPClient (mcp_client.py) instead of direct
+      `from mcp_server import dispatch_tool` — proper client-server boundary.
+    - MCPRequest/MCPContext envelope added: every call now has request_id + caller.
+    - Dynamic ticket ID extraction: no more hardcoded 'P1-LATEST'.
 """
 
 import os
+import re
 import sys
 from typing import Optional
 
@@ -24,42 +31,98 @@ WORKER_NAME = "policy_tool_worker"
 
 
 # ─────────────────────────────────────────────
-# MCP Client — Sprint 3: Thay bằng real MCP call
+# Ensure project root is on sys.path so that
+# mcp_client / mcp_protocol imports work when
+# running this file directly (python workers/policy_tool.py)
+# ─────────────────────────────────────────────
+_here = os.path.dirname(os.path.abspath(__file__))
+_root = os.path.dirname(_here)
+if _root not in sys.path:
+    sys.path.insert(0, _root)
+
+
+# ─────────────────────────────────────────────
+# MCP Client — Sprint 3: Use MCPClient (not direct import)
 # ─────────────────────────────────────────────
 
-def _call_mcp_tool(tool_name: str, tool_input: dict) -> dict:
+def _call_mcp_tool(tool_name: str, tool_input: dict, run_id: str = "") -> dict:
     """
-    Gọi MCP tool (in-process dispatch). Sprint 3 sẽ hoàn thiện server.
+    Sprint 3: Gọi MCP tool thông qua MCPClient — không import mcp_server trực tiếp.
 
-    Import mcp_server lazily ở đây để standalone test của worker không crash
-    khi Sprint 3 chưa ready.
-    """
-    from datetime import datetime
-
-    # Ensure project root trên sys.path khi chạy `python workers/policy_tool.py`
-    _here = os.path.dirname(os.path.abspath(__file__))
-    _root = os.path.dirname(_here)
-    if _root not in sys.path:
-        sys.path.insert(0, _root)
-
-    try:
-        from mcp_server import dispatch_tool  # type: ignore
+    Thay vì:
+        from mcp_server import dispatch_tool
         result = dispatch_tool(tool_name, tool_input)
+
+    Sprint 3 dùng:
+        from mcp_client import get_client
+        response = client.dispatch(MCPRequest(...))
+
+    Benefits:
+        - Transport độc lập: InProcess (default) hoặc HTTP (MCP_TRANSPORT=http)
+        - Formal envelope: request_id, caller, latency_ms được log rõ ràng
+        - Never raises: MCPClient luôn trả về MCPResponse, không throw exception
+    """
+    try:
+        from mcp_client import get_client          # Sprint 3 client abstraction
+        from mcp_protocol import MCPRequest, MCPContext  # Protocol envelope
+
+        client = get_client()
+        request = MCPRequest(
+            tool_name=tool_name,
+            tool_input=tool_input,
+            context=MCPContext(
+                run_id=run_id or None,
+                caller=WORKER_NAME,
+            ),
+        )
+        response = client.dispatch(request)
+
         return {
             "tool": tool_name,
             "input": tool_input,
-            "output": result,
-            "error": None,
-            "timestamp": datetime.now().isoformat(),
+            "output": response.output if response.is_ok() else None,
+            "error": {
+                "code": response.error.code,
+                "reason": response.error.message,
+            } if response.error else None,
+            "request_id": response.request_id,   # traceable!
+            "latency_ms": response.latency_ms,
+            "timestamp": request.context.timestamp if request.context else None,
         }
-    except Exception as e:
-        return {
-            "tool": tool_name,
-            "input": tool_input,
-            "output": None,
-            "error": {"code": "MCP_CALL_FAILED", "reason": str(e)},
-            "timestamp": datetime.now().isoformat(),
-        }
+
+    except ImportError:
+        # Fallback: direct dispatch if mcp_client.py not yet available
+        from datetime import datetime
+        try:
+            from mcp_server import dispatch_tool  # type: ignore
+            result = dispatch_tool(tool_name, tool_input)
+            return {
+                "tool": tool_name, "input": tool_input,
+                "output": result, "error": None,
+                "request_id": None, "latency_ms": None,
+                "timestamp": datetime.now().isoformat(),
+            }
+        except Exception as e:
+            return {
+                "tool": tool_name, "input": tool_input,
+                "output": None,
+                "error": {"code": "MCP_CALL_FAILED", "reason": str(e)},
+                "request_id": None, "latency_ms": None,
+                "timestamp": datetime.now().isoformat(),
+            }
+
+
+def _extract_ticket_id(task: str) -> str:
+    """
+    Sprint 3: Dynamically extract ticket ID from task text.
+
+    Fixes hardcoded 'P1-LATEST' in Sprint 2.
+    Matches patterns like: IT-1234, P1-LATEST, P2-5678.
+
+    Falls back to 'P1-LATEST' if no ticket ID found in task.
+    """
+    match = re.search(r"\b(P\d-\w+|IT-\d{3,6})\b", task, re.IGNORECASE)
+    return match.group().upper() if match else "P1-LATEST"
 
 
 # ─────────────────────────────────────────────
@@ -278,9 +341,17 @@ def run(state: dict) -> dict:
 
         # Step 3: Nếu cần thêm info từ MCP (e.g., ticket status), gọi get_ticket_info
         if needs_tool and any(kw in task.lower() for kw in ["ticket", "p1", "jira"]):
-            mcp_result = _call_mcp_tool("get_ticket_info", {"ticket_id": "P1-LATEST"})
+            # Sprint 3: Extract ticket ID dynamically from task (not hardcoded)
+            ticket_id = _extract_ticket_id(task)
+            mcp_result = _call_mcp_tool(
+                "get_ticket_info",
+                {"ticket_id": ticket_id},
+                run_id=state.get("run_id", ""),
+            )
             state["mcp_tools_used"].append(mcp_result)
-            state["history"].append(f"[{WORKER_NAME}] called MCP get_ticket_info")
+            state["history"].append(
+                f"[{WORKER_NAME}] called MCP get_ticket_info (ticket_id={ticket_id})"
+            )
 
         worker_io["output"] = {
             "policy_applies": policy_result["policy_applies"],
