@@ -8,3 +8,5 @@ day08/lab/data/grading_questions.json
 .env
 
 __pycache__/
+
+*chroma_db/

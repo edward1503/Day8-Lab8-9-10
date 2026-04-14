@@ -96,8 +96,12 @@ retrieval_worker:
     - "Score phải là float trong khoảng [0, 1]"
     - "Stateless: không đọc hoặc ghi state ngoài những gì được khai báo ở trên"
   actual_implementation:
-    status: "TODO Sprint 2"  # Update to "done" khi xong
-    notes: ""
+    status: "done"
+    notes: |
+      Dense retrieval qua ChromaDB (collection day09_docs) + sentence-transformers
+      (all-MiniLM-L6-v2). top_k đọc từ env RETRIEVAL_TOP_K, default 3.
+      Score = 1 - cosine_distance (ChromaDB trả về distance). Khi query lỗi
+      → retrieved_chunks=[] (abstain-safe, không fake chunks).
 
 # ─────────────────────────────────────────────
 # Policy Tool Worker
@@ -166,8 +170,15 @@ policy_tool_worker:
     - "Phải ghi tên MCP tool đã gọi vào mcp_tools_used"
     - "Không được tự bịa policy rules không có trong tài liệu"
   actual_implementation:
-    status: "TODO Sprint 2"
-    notes: ""
+    status: "done"
+    notes: |
+      Rule-based policy analysis, domain-aware. _detect_domain() phân loại
+      refund / access_control / sla / hr / it_helpdesk dựa vào keyword task
+      + source của chunks. Exceptions được detect theo domain:
+        - refund: flash_sale_exception, digital_product_exception, activated_exception
+        - access_control: no_emergency_bypass_level3, emergency_bypass_level2
+      Temporal scoping (v3 vs v4) được flag qua policy_version_note.
+      MCP integration (search_kb, get_ticket_info) là hook cho Sprint 3.
 
 # ─────────────────────────────────────────────
 # Synthesis Worker
@@ -214,8 +225,14 @@ synthesis_worker:
     - "confidence < 0.4 → khuyến khích set hitl_triggered=True"
     - "Không được dùng kiến thức ngoài context được cung cấp"
   actual_implementation:
-    status: "TODO Sprint 2"
-    notes: ""
+    status: "done"
+    notes: |
+      OpenAI gpt-4o-mini (fallback Gemini) với SYSTEM_PROMPT grounded.
+      Format citation `[1]`, `[2]` sau mỗi fact + dòng "Nguồn:" map
+      số thứ tự sang tên file. Abstain fast-path khi chunks=[] (không
+      gọi LLM, tránh hallucinate). Confidence tính từ max/avg cosine
+      score + boost khi có citation + penalty cho exceptions và
+      policy_version_note (không hard-code).
 
 # ─────────────────────────────────────────────
 # MCP Server
