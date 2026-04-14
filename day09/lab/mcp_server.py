@@ -236,14 +236,22 @@ def tool_check_access_permission(access_level: int, requester_role: str, is_emer
     if not rule:
         return {"error": f"Access level {access_level} không hợp lệ. Levels: 1, 2, 3."}
 
-    can_grant = True
     notes = []
 
     if is_emergency and rule.get("emergency_can_bypass"):
+        # Level 2: emergency bypass cho phép — cấp tạm thời được
         notes.append(rule.get("emergency_bypass_note", ""))
         can_grant = True
     elif is_emergency and not rule.get("emergency_can_bypass"):
-        notes.append(f"Level {access_level} KHÔNG có emergency bypass. Phải follow quy trình chuẩn.")
+        # Level 3: KHÔNG có emergency bypass — vẫn cần đủ approvers
+        notes.append(
+            f"Level {access_level} KHÔNG có emergency bypass. "
+            "Phải có đủ approvers theo quy trình chuẩn kể cả trong sự cố P1."
+        )
+        can_grant = False
+    else:
+        # Non-emergency: có thể cấp nếu đủ approvers
+        can_grant = True
 
     return {
         "access_level": access_level,
