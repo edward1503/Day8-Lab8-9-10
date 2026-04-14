@@ -20,6 +20,7 @@ import sys
 import argparse
 from datetime import datetime
 from typing import Optional
+from collections import Counter
 
 # Import graph
 sys.path.insert(0, os.path.dirname(__file__))
@@ -159,6 +160,45 @@ def run_grading_questions(questions_file: str = "data/grading_questions.json") -
 # 3. Analyze Traces
 # ─────────────────────────────────────────────
 
+def _load_traces(traces_dir: str, latest_per_question: bool = True) -> list:
+    """
+    Load trace files from a directory.
+
+    If latest_per_question=True, keep only the newest trace for each question_id.
+    This avoids duplicated runs from inflating Sprint 4 metrics.
+    """
+    if not os.path.exists(traces_dir):
+        return []
+
+    trace_files = [
+        os.path.join(traces_dir, f)
+        for f in os.listdir(traces_dir)
+        if f.endswith(".json")
+    ]
+    if not trace_files:
+        return []
+
+    # Newest first for stable "latest wins" behavior.
+    trace_files = sorted(trace_files, key=os.path.getmtime, reverse=True)
+    traces = []
+    seen_question_ids = set()
+
+    for fpath in trace_files:
+        with open(fpath, encoding="utf-8") as f:
+            trace = json.load(f)
+        qid = trace.get("question_id")
+        if latest_per_question:
+            # Sprint 4 metrics are computed on labeled eval runs only.
+            if not qid:
+                continue
+            if qid in seen_question_ids:
+                continue
+            seen_question_ids.add(qid)
+        traces.append(trace)
+
+    return traces
+
+
 def analyze_traces(traces_dir: str = "artifacts/traces") -> dict:
     """
     Đọc tất cả trace files và tính metrics tổng hợp.
@@ -178,27 +218,22 @@ def analyze_traces(traces_dir: str = "artifacts/traces") -> dict:
         print(f"⚠️  {traces_dir} không tồn tại. Chạy run_test_questions() trước.")
         return {}
 
-    trace_files = [f for f in os.listdir(traces_dir) if f.endswith(".json")]
-    if not trace_files:
+    traces = _load_traces(traces_dir, latest_per_question=True)
+    if not traces:
         print(f"⚠️  Không có trace files trong {traces_dir}.")
         return {}
 
-    traces = []
-    for fname in trace_files:
-        with open(os.path.join(traces_dir, fname), encoding="utf-8") as f:
-            traces.append(json.load(f))
-
     # Compute metrics
-    routing_counts = {}
+    routing_counts = Counter()
     confidences = []
     latencies = []
     mcp_calls = 0
     hitl_triggers = 0
-    source_counts = {}
+    source_counts = Counter()
 
     for t in traces:
         route = t.get("supervisor_route", "unknown")
-        routing_counts[route] = routing_counts.get(route, 0) + 1
+        routing_counts[route] += 1
 
         conf = t.get("confidence", 0)
         if conf:
@@ -215,16 +250,18 @@ def analyze_traces(traces_dir: str = "artifacts/traces") -> dict:
             hitl_triggers += 1
 
         for src in t.get("retrieved_sources", []):
-            source_counts[src] = source_counts.get(src, 0) + 1
+            source_counts[src] += 1
 
     total = len(traces)
     metrics = {
         "total_traces": total,
-        "routing_distribution": {k: f"{v}/{total} ({100*v//total}%)" for k, v in routing_counts.items()},
+        "routing_distribution": {
+            k: f"{v}/{total} ({round(100*v/total)}%)" for k, v in routing_counts.items()
+        },
         "avg_confidence": round(sum(confidences) / len(confidences), 3) if confidences else 0,
         "avg_latency_ms": round(sum(latencies) / len(latencies)) if latencies else 0,
-        "mcp_usage_rate": f"{mcp_calls}/{total} ({100*mcp_calls//total}%)" if total else "0%",
-        "hitl_rate": f"{hitl_triggers}/{total} ({100*hitl_triggers//total}%)" if total else "0%",
+        "mcp_usage_rate": f"{mcp_calls}/{total} ({round(100*mcp_calls/total)}%)" if total else "0%",
+        "hitl_rate": f"{hitl_triggers}/{total} ({round(100*hitl_triggers/total)}%)" if total else "0%",
         "top_sources": sorted(source_counts.items(), key=lambda x: -x[1])[:5],
     }
 
@@ -235,6 +272,61 @@ def analyze_traces(traces_dir: str = "artifacts/traces") -> dict:
 # 4. Compare Single vs Multi Agent
 # ─────────────────────────────────────────────
 
+def _load_day08_baseline(day08_results_file: Optional[str] = None) -> dict:
+    """
+    Load Day 08 baseline metrics if available.
+    Priority:
+      1) Explicit JSON file from --day08-baseline
+      2) scorecard_baseline.md (derive confidence proxy)
+      3) Fallback N/A structure
+    """
+    fallback = {
+        "total_questions": None,
+        "avg_confidence": "N/A",
+        "avg_latency_ms": "N/A",
+        "abstain_rate": "N/A",
+        "multi_hop_accuracy": "N/A",
+        "note": "Provide --day08-baseline JSON to compute exact deltas.",
+    }
+
+    if day08_results_file and os.path.exists(day08_results_file):
+        with open(day08_results_file, encoding="utf-8") as f:
+            data = json.load(f)
+        return data
+
+    # Try deriving a confidence proxy from Day 08 scorecard.
+    scorecard_md = os.path.normpath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "day08", "lab", "results", "scorecard_baseline.md")
+    )
+    if not os.path.exists(scorecard_md):
+        return fallback
+
+    try:
+        with open(scorecard_md, encoding="utf-8") as f:
+            text = f.read()
+        # Faithfulness as a rough confidence proxy.
+        marker = "| Faithfulness |"
+        if marker in text:
+            line = [ln for ln in text.splitlines() if marker in ln][0]
+            # format: | Faithfulness | 4.90/5 |
+            raw = line.split("|")[2].strip().split("/")[0]
+            faithfulness_5 = float(raw)
+            confidence_proxy = round(faithfulness_5 / 5, 3)
+        else:
+            confidence_proxy = "N/A"
+
+        return {
+            "total_questions": 10,
+            "avg_confidence": confidence_proxy,
+            "avg_latency_ms": "N/A",
+            "abstain_rate": "N/A",
+            "multi_hop_accuracy": "N/A",
+            "note": "avg_confidence is derived from Faithfulness scorecard proxy.",
+        }
+    except Exception:
+        return fallback
+
+
 def compare_single_vs_multi(
     multi_traces_dir: str = "artifacts/traces",
     day08_results_file: Optional[str] = None,
@@ -242,26 +334,25 @@ def compare_single_vs_multi(
     """
     So sánh Day 08 (single agent RAG) vs Day 09 (multi-agent).
 
-    TODO Sprint 4: Điền kết quả thực tế từ Day 08 vào day08_baseline.
-
     Returns:
         dict của comparison metrics
     """
     multi_metrics = analyze_traces(multi_traces_dir)
+    day08_baseline = _load_day08_baseline(day08_results_file)
 
-    # TODO: Load Day 08 results nếu có
-    # Nếu không có, dùng baseline giả lập để format
-    day08_baseline = {
-        "total_questions": 15,
-        "avg_confidence": 0.0,          # TODO: Điền từ Day 08 eval.py
-        "avg_latency_ms": 0,            # TODO: Điền từ Day 08
-        "abstain_rate": "?",            # TODO: Điền từ Day 08
-        "multi_hop_accuracy": "?",      # TODO: Điền từ Day 08
-    }
+    day08_conf = day08_baseline.get("avg_confidence")
+    day09_conf = multi_metrics.get("avg_confidence")
+    if isinstance(day08_conf, (int, float)) and isinstance(day09_conf, (int, float)):
+        conf_delta = round(day09_conf - day08_conf, 3)
+    else:
+        conf_delta = "N/A"
 
-    if day08_results_file and os.path.exists(day08_results_file):
-        with open(day08_results_file, encoding="utf-8") as f:
-            day08_baseline = json.load(f)
+    day08_lat = day08_baseline.get("avg_latency_ms")
+    day09_lat = multi_metrics.get("avg_latency_ms")
+    if isinstance(day08_lat, (int, float)) and isinstance(day09_lat, (int, float)):
+        lat_delta = int(day09_lat - day08_lat)
+    else:
+        lat_delta = "N/A"
 
     comparison = {
         "generated_at": datetime.now().isoformat(),
@@ -269,8 +360,8 @@ def compare_single_vs_multi(
         "day09_multi_agent": multi_metrics,
         "analysis": {
             "routing_visibility": "Day 09 có route_reason cho từng câu → dễ debug hơn Day 08",
-            "latency_delta": "TODO: Điền delta latency thực tế",
-            "accuracy_delta": "TODO: Điền delta accuracy thực tế từ grading",
+            "latency_delta_ms": lat_delta,
+            "confidence_delta": conf_delta,
             "debuggability": "Multi-agent: có thể test từng worker độc lập. Single-agent: không thể.",
             "mcp_benefit": "Day 09 có thể extend capability qua MCP không cần sửa core. Day 08 phải hard-code.",
         },
@@ -319,6 +410,7 @@ if __name__ == "__main__":
     parser.add_argument("--grading", action="store_true", help="Run grading questions")
     parser.add_argument("--analyze", action="store_true", help="Analyze existing traces")
     parser.add_argument("--compare", action="store_true", help="Compare single vs multi")
+    parser.add_argument("--day08-baseline", default=None, help="Path to Day 08 baseline JSON")
     parser.add_argument("--test-file", default="data/test_questions.json", help="Test questions file")
     args = parser.parse_args()
 
@@ -336,7 +428,7 @@ if __name__ == "__main__":
 
     elif args.compare:
         # So sánh single vs multi
-        comparison = compare_single_vs_multi()
+        comparison = compare_single_vs_multi(day08_results_file=args.day08_baseline)
         report_file = save_eval_report(comparison)
         print(f"\n📊 Comparison report saved → {report_file}")
         print("\n=== Day 08 vs Day 09 ===")
@@ -352,7 +444,7 @@ if __name__ == "__main__":
         print_metrics(metrics)
 
         # Lưu báo cáo
-        comparison = compare_single_vs_multi()
+        comparison = compare_single_vs_multi(day08_results_file=args.day08_baseline)
         report_file = save_eval_report(comparison)
         print(f"\n📄 Eval report → {report_file}")
         print("\n✅ Sprint 4 complete!")

@@ -1,11 +1,8 @@
 # Architecture — RAG Pipeline (Day 08 Lab)
 
-<<<<<<< HEAD
 > Template: Điền vào các mục này khi hoàn thành từng sprint.
 > Deliverable của Documentation Owner
 
-=======
->>>>>>> 67e75208944c2f9c9a12bad5107052b425b68486
 ## 1. Tổng quan kiến trúc
 
 ```mermaid
