@@ -1,13 +1,5 @@
 {
-<<<<<<< HEAD
-  "generated_at": "2026-04-14T16:36:49.686692",
-=======
-<<<<<<< HEAD
-  "generated_at": "2026-04-14T16:36:49.686692",
-=======
   "generated_at": "2026-04-14T16:54:43.968921",
->>>>>>> 0d4d278 (Add Sprint 4)
->>>>>>> 0d4d278 (Add Sprint 4)
   "day08_single_agent": {
     "total_questions": 10,
     "avg_confidence": 0.98,
@@ -17,37 +9,6 @@
     "note": "avg_confidence is derived from Faithfulness scorecard proxy."
   },
   "day09_multi_agent": {
-<<<<<<< HEAD
-    "total_traces": 44,
-    "routing_distribution": {
-      "policy_tool_worker": "22/44 (50%)",
-      "retrieval_worker": "22/44 (50%)"
-    },
-    "avg_confidence": 0.473,
-    "avg_latency_ms": 8495,
-    "mcp_usage_rate": "20/44 (45%)",
-    "hitl_rate": "0/44 (0%)",
-    "top_sources": [
-      [
-        "policy_refund_v4.txt",
-        23
-      ],
-      [
-        "sla_p1_2026.txt",
-        17
-      ],
-      [
-        "hr_leave_policy.txt",
-        17
-      ],
-      [
-        "access_control_sop.txt",
-        14
-      ],
-      [
-        "it_helpdesk_faq.txt",
-        13
-=======
     "total_traces": 15,
     "routing_distribution": {
       "policy_tool_worker": "6/15 (40%)",
@@ -77,7 +38,6 @@
       [
         "sla_p1_2026.txt",
         7
->>>>>>> 0d4d278 (Add Sprint 4)
       ]
     ]
   },

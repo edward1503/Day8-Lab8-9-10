@@ -223,14 +223,6 @@ def analyze_traces(traces_dir: str = "artifacts/traces") -> dict:
         print(f"⚠️  Không có trace files trong {traces_dir}.")
         return {}
 
-<<<<<<< HEAD
-    traces = []
-    for fname in trace_files:
-        with open(os.path.join(traces_dir, fname), encoding="utf-8") as f:
-            traces.append(json.load(f))
-
-=======
->>>>>>> 0d4d278 (Add Sprint 4)
     # Compute metrics
     routing_counts = Counter()
     confidences = []
@@ -355,18 +347,12 @@ def compare_single_vs_multi(
     else:
         conf_delta = "N/A"
 
-<<<<<<< HEAD
-    if day08_results_file and os.path.exists(day08_results_file):
-        with open(day08_results_file, encoding="utf-8") as f:
-            day08_baseline = json.load(f)
-=======
     day08_lat = day08_baseline.get("avg_latency_ms")
     day09_lat = multi_metrics.get("avg_latency_ms")
     if isinstance(day08_lat, (int, float)) and isinstance(day09_lat, (int, float)):
         lat_delta = int(day09_lat - day08_lat)
     else:
         lat_delta = "N/A"
->>>>>>> 0d4d278 (Add Sprint 4)
 
     comparison = {
         "generated_at": datetime.now().isoformat(),
