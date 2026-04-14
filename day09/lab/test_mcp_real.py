@@ -14,15 +14,15 @@ class TestRealMCPIntegration(unittest.TestCase):
     def setUpClass(cls):
         # Thiết lập environment cho HTTP transport
         os.environ["MCP_TRANSPORT"] = "http"
-        os.environ["MCP_SERVER_URL"] = "http://localhost:8030"
+        os.environ["MCP_SERVER_URL"] = "http://localhost:8000"
         
         # Thử kết nối tới server (đã chạy ở background)
         max_retries = 5
         for i in range(max_retries):
             try:
-                resp = requests.get("http://localhost:8030/health", timeout=2)
+                resp = requests.get("http://localhost:8000/health", timeout=2)
                 if resp.status_code == 200:
-                    print(f"\n[OK] MCP Server reachable at http://localhost:8030")
+                    print(f"\n[OK] MCP Server reachable at http://localhost:8000")
                     return
             except Exception:
                 pass
