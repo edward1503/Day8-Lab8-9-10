@@ -80,46 +80,112 @@ def make_initial_state(task: str) -> AgentState:
 def supervisor_node(state: AgentState) -> AgentState:
     """
     Supervisor phân tích task và quyết định:
-    1. Route sang worker nào
-    2. Có cần MCP tool không
-    3. Có risk cao cần HITL không
+    1. Route sang worker nào (retrieval_worker | policy_tool_worker | human_review)
+    2. Có cần MCP tool không (needs_tool)
+    3. Có risk cao cần HITL không (risk_high)
 
-    TODO Sprint 1: Implement routing logic dựa vào task keywords.
+    Routing dựa trên keyword matching với thứ tự ưu tiên:
+        1. Human review: mã lỗi không rõ (ERR-xxx) và thiếu context
+        2. Policy/Tool worker: refund, access control, policy exception questions
+        3. Retrieval worker: SLA, ticket, helpdesk, HR, và mặc định
     """
     task = state["task"].lower()
     state["history"].append(f"[supervisor] received task: {state['task'][:80]}")
 
-    # --- TODO: Implement routing logic ---
-    # Gợi ý:
-    # - "hoàn tiền", "refund", "flash sale", "license" → policy_tool_worker
-    # - "cấp quyền", "access level", "level 3", "emergency" → policy_tool_worker
-    # - "P1", "escalation", "sla", "ticket" → retrieval_worker
-    # - mã lỗi không rõ (ERR-XXX), không đủ context → human_review
-    # - còn lại → retrieval_worker
+    # ── Keyword sets ─────────────────────────────────────
+    # Nhóm 1: Policy exception / access control → policy_tool_worker
+    #   Chỉ trigger khi câu hỏi liên quan đến exceptions, edge cases,
+    #   hoặc cần kiểm tra policy rule cụ thể.
+    policy_exception_keywords = [
+        "flash sale", "store credit",
+        "ngoại lệ", "exception",
+        "license key", "subscription", "kỹ thuật số",
+        "đã kích hoạt", "kích hoạt", "đã đăng ký",
+        "không được hoàn",
+    ]
+    access_keywords = [
+        "cấp quyền", "access level", "level 2", "level 3", "level 4",
+        "admin access", "elevated access",
+        "quyền truy cập", "quyền tạm thời", "thu hồi quyền",
+    ]
 
-    route = "retrieval_worker"         # TODO: thay bằng logic thực
-    route_reason = "default route"    # TODO: thay bằng lý do thực
+    # Nhóm 1b: Kết hợp refund + action verb → policy_tool_worker
+    #   "hoàn tiền" chỉ trigger policy khi đi kèm tín hiệu hành động/kiểm tra
+    refund_action_signals = [
+        "được không", "được hoàn", "có được", "xử lý hoàn",
+        "chính sách hoàn", "điều kiện hoàn",
+    ]
+
+    # Nhóm 2: SLA & Ticket → retrieval_worker
+    sla_keywords = [
+        "p1", "p2", "p3", "p4", "sla", "ticket",
+        "escalation", "escalate", "sự cố", "incident",
+        "on-call", "phản hồi", "resolution",
+    ]
+
+    # Nhóm 3: Risk signals
+    risk_keywords = [
+        "emergency", "khẩn cấp", "2am", "3am", "ngoài giờ",
+        "tạm thời", "urgent", "critical",
+    ]
+
+    # ── Classify ─────────────────────────────────────────
+    route = "retrieval_worker"
+    route_reason = ""
     needs_tool = False
     risk_high = False
 
-    # Ví dụ routing cơ bản — nhóm phát triển thêm:
-    policy_keywords = ["hoàn tiền", "refund", "flash sale", "license", "cấp quyền", "access", "level 3"]
-    risk_keywords = ["emergency", "khẩn cấp", "2am", "không rõ", "err-"]
+    # Detect matched keywords for explainability
+    matched_exception = [kw for kw in policy_exception_keywords if kw in task]
+    matched_access    = [kw for kw in access_keywords if kw in task]
+    matched_sla       = [kw for kw in sla_keywords if kw in task]
+    matched_risk      = [kw for kw in risk_keywords if kw in task]
 
-    if any(kw in task for kw in policy_keywords):
-        route = "policy_tool_worker"
-        route_reason = f"task contains policy/access keyword"
-        needs_tool = True
+    # Refund + action signal combo check
+    has_refund_word = any(kw in task for kw in ["hoàn tiền", "refund"])
+    has_refund_action = any(kw in task for kw in refund_action_signals)
+    refund_policy_trigger = has_refund_word and has_refund_action
 
-    if any(kw in task for kw in risk_keywords):
-        risk_high = True
-        route_reason += " | risk_high flagged"
+    # ── Step 1: Check human_review (only for truly ambiguous cases) ──
+    import re
+    err_match = re.search(r"err[-_]?\d{3}", task)
+    ambiguity_signals = ["không rõ", "không hiểu", "giải thích"]
+    is_ambiguous = err_match and any(s in task for s in ambiguity_signals)
 
-    # Human review override
-    if risk_high and "err-" in task:
+    if is_ambiguous:
         route = "human_review"
-        route_reason = "unknown error code + risk_high → human review"
+        route_reason = f"unknown error code '{err_match.group()}' + ambiguous context → human review needed"
+        risk_high = True
 
+    # ── Step 2: Policy exception / Access control routing ──
+    elif matched_exception or matched_access or refund_policy_trigger:
+        route = "policy_tool_worker"
+        needs_tool = True
+        triggers = matched_exception + matched_access
+        if refund_policy_trigger:
+            triggers += ["refund+action"]
+        route_reason = f"task contains policy/access keywords: [{', '.join(triggers[:4])}]"
+
+        # Multi-hop: nếu câu hỏi vừa chứa cả policy keywords VÀ SLA keywords
+        if matched_sla:
+            route_reason += f" + SLA context [{', '.join(matched_sla[:3])}] → multi-hop policy+retrieval"
+
+    # ── Step 3: SLA / Ticket routing ──
+    elif matched_sla:
+        route = "retrieval_worker"
+        route_reason = f"task contains SLA/ticket keywords: [{', '.join(matched_sla[:4])}]"
+
+    # ── Step 4: Default → retrieval_worker ──
+    else:
+        route = "retrieval_worker"
+        route_reason = "no specific policy/SLA signal detected — default to knowledge base retrieval"
+
+    # ── Risk assessment (additive, independent of route) ──
+    if matched_risk:
+        risk_high = True
+        route_reason += f" | risk_high flagged: [{', '.join(matched_risk[:3])}]"
+
+    # ── Persist decisions to state ────────────────────────
     state["supervisor_route"] = route
     state["route_reason"] = route_reason
     state["needs_tool"] = needs_tool
