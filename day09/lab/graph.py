@@ -49,6 +49,7 @@ class AgentState(TypedDict):
     supervisor_route: str               # Worker được chọn bởi supervisor
     latency_ms: Optional[int]           # Thời gian xử lý (ms)
     run_id: str                         # ID của run này
+    timestamp: str                      # Thời điểm thực thi
 
 
 def make_initial_state(task: str) -> AgentState:
@@ -71,7 +72,8 @@ def make_initial_state(task: str) -> AgentState:
         "worker_io_logs": [],
         "supervisor_route": "",
         "latency_ms": None,
-        "run_id": f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+        "run_id": f"run_{datetime.now().strftime('%Y%md_%H%M%S')}",
+        "timestamp": datetime.now().isoformat(),
     }
 
 
@@ -79,122 +81,120 @@ def make_initial_state(task: str) -> AgentState:
 # 2. Supervisor Node — quyết định route
 # ─────────────────────────────────────────────
 
-def supervisor_node(state: AgentState) -> AgentState:
-    """
-    Supervisor phân tích task và quyết định:
-    1. Route sang worker nào (retrieval_worker | policy_tool_worker | human_review)
-    2. Có cần MCP tool không (needs_tool)
-    3. Có risk cao cần HITL không (risk_high)
+def _rule_based_supervisor(task: str) -> dict:
+    """Fallback logic dựa trên keyword matching."""
+    task_lower = task.lower()
+    
+    # Keyword sets
+    policy_exception_keywords = ["flash sale", "store credit", "ngoại lệ", "exception", "license key", "kỹ thuật số", "không được hoàn"]
+    access_keywords = ["cấp quyền", "access level", "level 2", "level 3", "level 4", "quyền truy cập", "quyền tạm thời"]
+    refund_action_signals = ["được không", "được hoàn", "có được", "xử lý hoàn"]
+    sla_keywords = ["p1", "p2", "p3", "p4", "sla", "ticket", "escalation", "sự cố", "on-call"]
+    risk_keywords = ["emergency", "khẩn cấp", "2am", "3am", "ngoài giờ", "urgent", "critical"]
 
-    Routing dựa trên keyword matching với thứ tự ưu tiên:
-        1. Human review: mã lỗi không rõ (ERR-xxx) và thiếu context
-        2. Policy/Tool worker: refund, access control, policy exception questions
-        3. Retrieval worker: SLA, ticket, helpdesk, HR, và mặc định
-    """
-    task = state["task"].lower()
-    state["history"].append(f"[supervisor] received task: {state['task'][:80]}")
+    matched_exception = [kw for kw in policy_exception_keywords if kw in task_lower]
+    matched_access = [kw for kw in access_keywords if kw in task_lower]
+    matched_sla = [kw for kw in sla_keywords if kw in task_lower]
+    matched_risk = [kw for kw in risk_keywords if kw in task_lower]
 
-    # ── Keyword sets ─────────────────────────────────────
-    # Nhóm 1: Policy exception / access control → policy_tool_worker
-    #   Chỉ trigger khi câu hỏi liên quan đến exceptions, edge cases,
-    #   hoặc cần kiểm tra policy rule cụ thể.
-    policy_exception_keywords = [
-        "flash sale", "store credit",
-        "ngoại lệ", "exception",
-        "license key", "subscription", "kỹ thuật số",
-        "đã kích hoạt", "kích hoạt", "đã đăng ký",
-        "không được hoàn",
-    ]
-    access_keywords = [
-        "cấp quyền", "access level", "level 2", "level 3", "level 4",
-        "admin access", "elevated access",
-        "quyền truy cập", "quyền tạm thời", "thu hồi quyền",
-    ]
-
-    # Nhóm 1b: Kết hợp refund + action verb → policy_tool_worker
-    #   "hoàn tiền" chỉ trigger policy khi đi kèm tín hiệu hành động/kiểm tra
-    refund_action_signals = [
-        "được không", "được hoàn", "có được", "xử lý hoàn",
-        "chính sách hoàn", "điều kiện hoàn",
-    ]
-
-    # Nhóm 2: SLA & Ticket → retrieval_worker
-    sla_keywords = [
-        "p1", "p2", "p3", "p4", "sla", "ticket",
-        "escalation", "escalate", "sự cố", "incident",
-        "on-call", "phản hồi", "resolution",
-    ]
-
-    # Nhóm 3: Risk signals
-    risk_keywords = [
-        "emergency", "khẩn cấp", "2am", "3am", "ngoài giờ",
-        "tạm thời", "urgent", "critical",
-    ]
-
-    # ── Classify ─────────────────────────────────────────
-    route = "retrieval_worker"
-    route_reason = ""
-    needs_tool = False
-    risk_high = False
-
-    # Detect matched keywords for explainability
-    matched_exception = [kw for kw in policy_exception_keywords if kw in task]
-    matched_access    = [kw for kw in access_keywords if kw in task]
-    matched_sla       = [kw for kw in sla_keywords if kw in task]
-    matched_risk      = [kw for kw in risk_keywords if kw in task]
-
-    # Refund + action signal combo check
-    has_refund_word = any(kw in task for kw in ["hoàn tiền", "refund"])
-    has_refund_action = any(kw in task for kw in refund_action_signals)
+    has_refund_word = any(kw in task_lower for kw in ["hoàn tiền", "refund"])
+    has_refund_action = any(kw in task_lower for kw in refund_action_signals)
     refund_policy_trigger = has_refund_word and has_refund_action
 
-    # ── Step 1: Check human_review (only for truly ambiguous cases) ──
-    import re
-    err_match = re.search(r"err[-_]?\d{3}", task)
-    ambiguity_signals = ["không rõ", "không hiểu", "giải thích"]
-    is_ambiguous = err_match and any(s in task for s in ambiguity_signals)
+    route = "retrieval_worker"
+    risk_high = bool(matched_risk)
+    needs_tool = False
 
-    if is_ambiguous:
-        route = "human_review"
-        route_reason = f"unknown error code '{err_match.group()}' + ambiguous context → human review needed"
-        risk_high = True
-
-    # ── Step 2: Policy exception / Access control routing ──
-    elif matched_exception or matched_access or refund_policy_trigger:
+    if matched_exception or matched_access or refund_policy_trigger:
         route = "policy_tool_worker"
         needs_tool = True
-        triggers = matched_exception + matched_access
-        if refund_policy_trigger:
-            triggers += ["refund+action"]
-        route_reason = f"task contains policy/access keywords: [{', '.join(triggers[:4])}]"
-
-        # Multi-hop: nếu câu hỏi vừa chứa cả policy keywords VÀ SLA keywords
-        if matched_sla:
-            route_reason += f" + SLA context [{', '.join(matched_sla[:3])}] → multi-hop policy+retrieval"
-
-    # ── Step 3: SLA / Ticket routing ──
     elif matched_sla:
         route = "retrieval_worker"
-        route_reason = f"task contains SLA/ticket keywords: [{', '.join(matched_sla[:4])}]"
+    
+    return {
+        "route": route,
+        "reason": f"Rule-based fallback: matched keywords {[kw for kw in (matched_exception + matched_access + matched_sla) if kw in task_lower][:3]}",
+        "risk_high": risk_high,
+        "needs_tool": needs_tool
+    }
 
-    # ── Step 4: Default → retrieval_worker ──
-    else:
-        route = "retrieval_worker"
-        route_reason = "no specific policy/SLA signal detected — default to knowledge base retrieval"
+def _call_supervisor_llm(task: str) -> dict:
+    """Gọi LLM để phân tích và quyết định route."""
+    from openai import OpenAI
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    
+    prompt = f"""Bạn là bộ não điều phối (Supervisor) của hệ thống IT Helpdesk Multi-Agent. 
+Nhiệm vụ: Phân tích yêu cầu người dùng và trả về JSON chỉ định Worker phù hợp.
 
-    # ── Risk assessment (additive, independent of route) ──
-    if matched_risk:
-        risk_high = True
-        route_reason += f" | risk_high flagged: [{', '.join(matched_risk[:3])}]"
+Workers có sẵn:
+1. `retrieval_worker`: Chuyên trả lời các câu hỏi về quy định chung, SLA, HR, hướng dẫn kỹ thuật từ tài liệu.
+2. `policy_tool_worker`: Chuyên xử lý các yêu cầu Hoàn tiền (Refund), Cấp quyền truy cập (Access), hoặc các ngoại lệ chính sách cần kiểm tra logic/gọi tool.
+3. `human_review`: Dùng khi yêu cầu quá mơ hồ, chứa mã lỗi lạ (ERR-xxx) hoặc cực kỳ rủi ro.
 
-    # ── Persist decisions to state ────────────────────────
+Quy tắc rủi ro (risk_high):
+- Đặt `risk_high: true` nếu yêu cầu xảy ra vào giờ nhạy cảm (2am-5am), ghi rõ "emergency", "urgent", "critical", liên quan đến bảo mật hoặc có nguy cơ rò rỉ dữ liệu.
+
+Định dạng trả về (JSON duy nhất):
+{{
+  "route": "retrieval_worker" | "policy_tool_worker" | "human_review",
+  "reason": "Giải thích ngắn gọn lý do chọn route này",
+  "needs_tool": true | false,
+  "risk_high": true | false
+}}
+
+User Task: "{task}"
+"""
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "system", "content": "You are a helpful supervisor agent. Output ONLY valid JSON."},
+                  {"role": "user", "content": prompt}],
+        temperature=0,
+        response_format={ "type": "json_object" }
+    )
+    return json.loads(response.choices[0].message.content)
+
+def supervisor_node(state: AgentState) -> AgentState:
+    """
+    Supervisor thông minh: Ưu tiên dùng LLM, fallback về rule-based nếu lỗi.
+    Đặc biệt: Nếu phát hiện rủi ro cao (risk_high), ép buộc qua HITL (human_review).
+    """
+    task = state["task"]
+    state["history"].append(f"[supervisor] analyzing task: {task[:80]}...")
+
+    try:
+        # 1. Gọi LLM Supervisor
+        print(f"  [Orchestration Mode] LLM-based")
+        decision = _call_supervisor_llm(task)
+        route = decision.get("route", "retrieval_worker")
+        reason = decision.get("reason", "LLM decision")
+        risk_high = decision.get("risk_high", False)
+        needs_tool = decision.get("needs_tool", False)
+        state["history"].append(f"[supervisor] LLM decided route={route}")
+    except Exception as e:
+        # 2. Fallback nếu LLM lỗi
+        print(f"  [Orchestration Mode] Rule-based (Fallback)")
+        state["history"].append(f"[supervisor] LLM failed ({str(e)}), falling back to rule-based logic")
+        decision = _rule_based_supervisor(task)
+        route = decision["route"]
+        reason = decision["reason"]
+        risk_high = decision["risk_high"]
+        needs_tool = decision["needs_tool"]
+
+    # 3. Logic ép buộc HITL nếu High Risk (Theo yêu cầu người dùng)
+    if risk_high and route != "human_review":
+        reason = f"🚨 HIGH RISK DETECTED: {reason} | Redirecting to HITL for safety."
+        route = "human_review"
+        state["history"].append("[supervisor] High risk detected, forcing human_review")
+
+    # Lưu kết quả vào state
     state["supervisor_route"] = route
-    state["route_reason"] = route_reason
-    state["needs_tool"] = needs_tool
+    state["route_reason"] = reason
     state["risk_high"] = risk_high
-    state["history"].append(f"[supervisor] route={route} reason={route_reason}")
+    state["needs_tool"] = needs_tool
+    state["history"].append(f"[supervisor] finalized_route={route} reason={reason}")
 
     return state
+
 
 
 # ─────────────────────────────────────────────
@@ -369,7 +369,7 @@ if __name__ == "__main__":
         print(f"  Route   : {result['supervisor_route']}")
         print(f"  Reason  : {result['route_reason']}")
         print(f"  Workers : {result['workers_called']}")
-        print(f"  Answer  : {result['final_answer'][:120]}...")
+        print(f"  Answer  : {result['final_answer'][:400]}...")
         print(f"  Confidence: {result['confidence']}")
         print(f"  Latency : {result['latency_ms']}ms")
 
