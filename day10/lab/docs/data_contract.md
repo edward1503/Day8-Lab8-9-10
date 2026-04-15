@@ -1,136 +1,162 @@
-# Data Contract — Lab Day 10: KB Chunk Export
+# Data Contract — KB Chunk Export
 
-> Đồng bộ với `contracts/data_contract.yaml` (version 1.1, last_updated: 2026-04-15).  
-> **Owner team:** Lab Day 10 Group  
-> **Freshness SLA:** 24h kể từ `exported_at` đến `index_visible` (publish boundary)
+**Nguồn chuẩn:** `contracts/data_contract.yaml`  
+**Dataset:** `kb_chunk_export`  
+**Owner team:** Lab Day 10 Group  
+**Phạm vi contract:** cleaned CSV trước khi embed vào Chroma
 
----
+## 1. Source map
 
-## 1. Nguồn dữ liệu (Source Map)
+Sprint 4 yêu cầu ghi tối thiểu nguồn, failure mode và metric. Nguồn ingest trực tiếp là CSV export; các file text trong `data/docs/` đóng vai trò canonical reference để kiểm chứng nội dung đúng phiên bản.
 
-| Nguồn | Phương thức ingest | Failure mode chính | Metric / Alert |
-|-------|-------------------|-------------------|----------------|
-| `data/raw/policy_export_dirty.csv` (DB/API CSV export) | Batch snapshot, `csv.DictReader`, UTF-8 | (1) Duplicate rows — `duplicate_chunk_text`; (2) `effective_date` sai format `DD/MM/YYYY`; (3) `doc_id` lạ không trong allowlist; (4) `chunk_text` rỗng; (5) BOM/invisible char | `raw_records` vs `cleaned_records` delta; **alert nếu `quarantine_records / raw_records > 30%`**; expectation E3/E5/E6 halt |
-| `data/docs/policy_refund_v4.txt` | Canonical reference — không ingest trực tiếp vào CSV pipeline; dùng để verify nội dung chunk | Version conflict (bản v3 chứa "14 ngày" vs v4 chứa "7 ngày" cùng tồn tại trong export) | Rule 6 fix + expectation E3 halt; `eval_retrieval q_refund_window hits_forbidden` |
-| `data/docs/hr_leave_policy.txt` | Canonical reference (bản 2026 — 12 ngày phép) | Version conflict 2025 (10 ngày) vs 2026 (12 ngày) cùng tồn tại trong batch export | Rule 3 quarantine `stale_hr_policy_effective_date`; expectation E6 halt; `eval_retrieval q_leave_version top1_doc_expected` |
-| `data/docs/it_helpdesk_faq.txt` | Canonical reference | Date format không chuẩn (`01/02/2026` thay vì ISO) trong export | Rule 2 normalize + E5 halt; `non_iso_date_count` trước/sau normalize |
-| `data/docs/sla_p1_2026.txt` | Canonical reference | SLA thay đổi khi hợp đồng mới mà export chưa cập nhật | `embed_upsert count` khớp `cleaned_records`; golden query `q_p1_sla contains_expected` |
+| Nguồn | Vai trò trong pipeline | Failure mode chính | Metric / evidence |
+|------|-------------------------|--------------------|-------------------|
+| `data/raw/policy_export_dirty.csv` | Input chính của ETL | duplicate, `doc_id` lạ, thiếu `effective_date`, date `DD/MM/YYYY`, HR stale version, refund stale content | `raw_records`, `cleaned_records`, `quarantine_records`, lý do trong quarantine CSV |
+| `data/docs/policy_refund_v4.txt` | Canonical policy tham chiếu | export cũ vẫn còn câu `14 ngày làm việc` | expectation `refund_no_stale_14d_window`, eval `q_refund_window` |
+| `data/docs/hr_leave_policy.txt` | Canonical HR policy tham chiếu | conflict 2025 `10 ngày` vs 2026 `12 ngày` | quarantine `stale_hr_policy_effective_date`, expectation `hr_leave_no_stale_10d_annual`, eval `q_leave_version` |
+| `data/docs/it_helpdesk_faq.txt` | Canonical IT FAQ tham chiếu | date export không ISO hoặc chunk bị lỗi format | expectation `effective_date_iso_yyyy_mm_dd`, cleaned CSV |
+| `data/docs/sla_p1_2026.txt` | Canonical SLA tham chiếu | source export thiếu/cũ làm top-1 retrieval lệch | eval `q_p1_sla` |
 
-**Tất cả nguồn canonical:**
+## 2. Cleaned schema
 
-| Document | Owner | Update frequency | Version hiện tại | Ghi chú |
-|----------|-------|-----------------|-----------------|---------|
-| `policy_refund_v4` | CS Policy Team | Per policy revision | v4 (2026-02-01) | Refund window = **7 ngày làm việc**; bản v3 (14 ngày) là stale — Rule 6 fix |
-| `sla_p1_2026` | IT Operations | Annual | 2026 | SLA P1: phản hồi **15 phút**, resolution **4 giờ** |
-| `hr_leave_policy` | HR Department | Annual (đầu năm) | 2026 (min date 2026-01-01) | Bản 2025 (10 ngày) obsolete; 2026 = **12 ngày phép** dưới 3 năm KN |
-| `it_helpdesk_faq` | IT Helpdesk | Quarterly | 2026-02-01 | Khóa TK sau **5 lần** sai; đổi MK qua portal mất tối đa 24h đồng bộ |
+Schema cleaned đang được code ghi ra bởi `write_cleaned_csv()`:
 
----
+| Cột | Kiểu | Required | Constraint | Ghi chú |
+|-----|------|----------|------------|---------|
+| `chunk_id` | string | Có | unique theo cleaned snapshot | Stable ID từ `doc_id`, `chunk_text`, `seq` |
+| `doc_id` | string | Có | thuộc allowlist | `policy_refund_v4`, `sla_p1_2026`, `it_helpdesk_faq`, `hr_leave_policy` |
+| `chunk_text` | string | Có | không rỗng, đủ ngữ nghĩa để embed | Có thể được fix/refine bởi cleaning rules |
+| `effective_date` | string date | Có | format `YYYY-MM-DD` | Rule 2 chuẩn hoá từ ISO hoặc `DD/MM/YYYY` |
+| `exported_at` | string datetime | Không bắt buộc tuyệt đối | nếu có sẽ dùng cho freshness | Lấy từ raw export |
 
-## 2. Schema Cleaned
+## 3. Field-level contract
 
-| Cột | Kiểu | Bắt buộc | Constraints | Ghi chú |
-|-----|------|----------|-------------|---------|
-| `chunk_id` | string | **Có** | Unique, stable key | `sha256(doc_id\|chunk_text\|seq)[:16]` → `{doc_id}_{seq}_{hash}`; idempotent upsert khi rerun |
-| `doc_id` | string | **Có** | `enum: [policy_refund_v4, sla_p1_2026, it_helpdesk_faq, hr_leave_policy]` | Phải thuộc `ALLOWED_DOC_IDS`; Rule 1 quarantine nếu sai |
-| `chunk_text` | string | **Có** | `min_length: 8`, `min_word_count: 5`, `no_bom: true` | Không chứa version sai; whitespace đã normalize (Rule 9); BOM đã quarantine (Rule 7) |
-| `effective_date` | date | **Có** | Format `YYYY-MM-DD`; min `2026-01-01` (HR); max `2030-01-01` (env `FUTURE_DATE_CUTOFF`) | Chuẩn hoá từ ISO hoặc DD/MM/YYYY; quarantine nếu không parse được hoặc rỗng |
-| `exported_at` | datetime | Không (có thì tốt) | ISO datetime | Dùng tính freshness SLA trong manifest; nếu thiếu → freshness WARN |
+### `chunk_id`
 
-**Breaking changes cần alert:**
-- Đổi tên cột (vd `doc_id` → `document_id`) → Rule 1 + E2 halt toàn bộ pipeline
-- Xóa cột `effective_date` → E5 halt
-- Thêm cột mới → không breaking (CSV DictReader tolerant), nhưng phải đồng bộ `contracts/data_contract.yaml`
+- phải ổn định với cùng cleaned content
+- được dùng làm khóa `upsert` vào Chroma
+- nếu thuật toán đổi, đó là breaking change vì ảnh hưởng idempotency và prune logic
 
----
+### `doc_id`
 
-## 3. Quy tắc Quarantine vs Drop vs Fix
+- phải thuộc allowlist trong `transform/cleaning_rules.py`
+- giá trị ngoài allowlist sẽ bị đưa vào quarantine với reason `unknown_doc_id`
+- thêm `doc_id` mới yêu cầu cập nhật đồng thời:
+  - allowlist trong code
+  - `contracts/data_contract.yaml`
+  - tài liệu canonical tương ứng
+  - câu hỏi eval nếu nguồn mới quan trọng
 
-| Reason | Hành động | File output | Ai approve merge lại? |
-|--------|-----------|-------------|----------------------|
-| `unknown_doc_id` | **Quarantine** → `artifacts/quarantine/` | `quarantine_<run_id>.csv` | Data owner xác nhận `doc_id` mới → thêm vào `ALLOWED_DOC_IDS` và `allowed_doc_ids` YAML |
-| `missing_effective_date` | **Quarantine** | `quarantine_<run_id>.csv` | SME điền ngày hiệu lực vào record gốc ở hệ nguồn |
-| `invalid_effective_date_format` | **Quarantine** | `quarantine_<run_id>.csv` | Engineer fix parser hoặc source system export format |
-| `stale_hr_policy_effective_date` | **Quarantine** (HR < `HR_LEAVE_MIN_EFFECTIVE_DATE`) | `quarantine_<run_id>.csv` | HR xác nhận bản canonical 2026 — không merge bản cũ |
-| `missing_chunk_text` | **Quarantine** | `quarantine_<run_id>.csv` | Kiểm tra source export — có thể lỗi migration; re-export nếu cần |
-| `duplicate_chunk_text` | **Quarantine** (giữ bản đầu tiên) | `quarantine_<run_id>.csv` | Không cần approve — tự dedupe; log để audit trail |
-| `bom_or_invisible_char_in_text` | **Quarantine** | `quarantine_<run_id>.csv` | Engineer fix encoding pipeline nguồn (không phải strip tại đây — xử lý gốc rễ) |
-| `effective_date_beyond_future_cutoff` | **Quarantine** | `quarantine_<run_id>.csv` | Xác nhận ngày hợp lệ; hoặc tăng `FUTURE_DATE_CUTOFF` nếu policy thật có ngày tương lai xa |
-| stale refund window | **Fix in-place** — "14 ngày" → "7 ngày" + marker `[cleaned: stale_refund_window]` | `cleaned_<run_id>.csv` | Auto-fix; record vẫn vào cleaned — expectation E3 verify sau fix |
-| whitespace thừa | **Fix in-place** — normalize + marker `[cleaned: whitespace_normalized]` | `cleaned_<run_id>.csv` | Auto-fix; không cần approve |
+### `chunk_text`
 
-**Nguyên tắc:** Không silent drop — mọi record bị loại đều phải có lý do ghi vào quarantine CSV.
+- không được rỗng
+- không được chứa BOM / zero-width characters
+- có thể bị chuẩn hoá whitespace
+- riêng `policy_refund_v4` sẽ được sửa `14 ngày làm việc` thành `7 ngày làm việc` nếu không bật `--no-refund-fix`
 
----
+### `effective_date`
 
-## 4. Quality Rules & Expectations
+- phải chuẩn hoá về `YYYY-MM-DD`
+- nếu là `hr_leave_policy`, ngày phải `>= HR_LEAVE_MIN_EFFECTIVE_DATE`
+- nếu lớn hơn `FUTURE_DATE_CUTOFF`, record bị quarantine
 
-### Cleaning Rules
+### `exported_at`
 
-| ID | Mô tả ngắn | Severity | Env var / Flag |
-|----|-----------|----------|----------------|
-| Rule 1 | Allowlist `doc_id` | quarantine | — |
-| Rule 2 | Normalize `effective_date` (ISO / DD/MM/YYYY) | quarantine | — |
-| Rule 3 | HR stale version cutoff | quarantine | `HR_LEAVE_MIN_EFFECTIVE_DATE` (default 2026-01-01) |
-| Rule 4 | Empty `chunk_text` | quarantine | — |
-| Rule 5 | Deduplicate `chunk_text` | quarantine | — |
-| Rule 6 | Fix stale refund window 14→7 ngày | fix | `--no-refund-fix` flag |
-| Rule 7 | BOM / invisible char detection | quarantine | — |
-| Rule 8 | Future date cutoff | quarantine | `FUTURE_DATE_CUTOFF` (default 2030-01-01) |
-| Rule 9 | Whitespace normalization | fix | — |
+- giúp tính freshness SLA
+- được ghi vào cleaned CSV và manifest dưới dạng `latest_exported_at`
+- nếu nguồn không cung cấp timestamp, freshness logic sẽ fallback sang `run_timestamp`
 
-### Expectations
+## 4. Cleaning rules gắn với contract
 
-| ID | Name | Severity | metric_impact |
-|----|------|----------|---------------|
-| E1 | `min_one_row` | **halt** | Pipeline rỗng → halt toàn bộ embed |
-| E2 | `no_empty_doc_id` | **halt** | Header mất cột → toàn bộ doc_id rỗng → halt |
-| E3 | `refund_no_stale_14d_window` | **halt** | Bypass Rule 6 → E3 FAIL → không embed chunk sai |
-| E4 | `chunk_min_length_8` | warn | Chunking hỏng → short chunks → warn để review |
-| E5 | `effective_date_iso_yyyy_mm_dd` | **halt** | Rule 2 bị bypass → non-ISO date lọt → halt |
-| E6 | `hr_leave_no_stale_10d_annual` | **halt** | Rule 3 bị bypass → bản HR 2025 lọt → halt |
-| E7 | `no_bom_or_invisible_char_in_cleaned` | **halt** | Lưới an toàn thứ 2 sau Rule 7; bypass Rule 7 + inject BOM → E7 halt |
-| E8 | `no_future_effective_date_beyond_cutoff` | warn | bypass Rule 8 + inject 2099 → E8 WARN |
-| E9 | `chunk_text_min_word_count` | warn | Inject chunk < 5 từ → E9 WARN; min override qua `CHUNK_MIN_WORD_COUNT` |
+Các rule hiện có bảo vệ contract như sau:
 
----
+| Rule | Bảo vệ field nào | Hành động |
+|------|------------------|-----------|
+| Allowlist doc id | `doc_id` | quarantine record lạ |
+| Normalize effective date | `effective_date` | parse hoặc quarantine |
+| HR stale cutoff | `effective_date`, `doc_id` | loại bản HR cũ |
+| Empty chunk check | `chunk_text` | quarantine |
+| Dedup by normalized text | `chunk_text` | giữ snapshot sạch, không lặp |
+| Refund fix 14 -> 7 | `chunk_text` | sửa business content stale |
+| Invisible char detection | `chunk_text` | quarantine lỗi encoding |
+| Future date cutoff | `effective_date` | quarantine dữ liệu bất thường |
+| Whitespace normalization | `chunk_text` | fix format trước khi sinh `chunk_id` |
 
-## 5. Freshness SLA
+## 5. Expectations gắn với contract
 
-| Tham số | Giá trị | Ghi chú |
-|---------|---------|---------|
-| **Boundary đo** | `publish` (sau `embed_upsert`) | Không đo ở `cron_start` — tránh "pipeline green nhưng user thấy cũ" |
-| **SLA** | 24 giờ | Kể từ `exported_at` đến thời điểm index visible |
-| **PASS** | `age_hours ≤ 24` | Data tươi — agent có thể serve |
-| **WARN** | Không có `exported_at` trong manifest | Cần điều tra nguồn export |
-| **FAIL** | `age_hours > 24` | Cần re-export và re-run pipeline |
-| **Alert channel** | Console log (`freshness_check=FAIL {detail}`) | Override `FRESHNESS_SLA_HOURS` trong `.env` |
+Expectation suite đóng vai trò "consumer-side contract check" trước khi publish:
 
-**Lưu ý CSV mẫu:** `exported_at = 2026-04-10` → `age_hours ≈ 120h` → `freshness_check=FAIL` là **có chủ đích** để demo SLA breach. Để test PASS: set `FRESHNESS_SLA_HOURS=200` trong `.env`.
+| Expectation | Severity | Contract được kiểm |
+|-------------|----------|--------------------|
+| `min_one_row` | halt | dataset không được rỗng |
+| `no_empty_doc_id` | halt | `doc_id` phải có |
+| `refund_no_stale_14d_window` | halt | refund content phải đúng version |
+| `chunk_min_length_8` | warn | `chunk_text` không quá ngắn |
+| `effective_date_iso_yyyy_mm_dd` | halt | `effective_date` đúng format |
+| `hr_leave_no_stale_10d_annual` | halt | HR content đúng phiên bản hiện hành |
+| `no_bom_or_invisible_char_in_cleaned` | halt | text không có lỗi encoding |
+| `no_future_effective_date_beyond_cutoff` | warn | ngày hiệu lực không quá xa |
+| `chunk_text_min_word_count` | warn | chunk đủ ngữ nghĩa để embed |
 
----
+## 6. Quarantine contract
 
-## 6. Versioning & Canonical
+Record vi phạm contract không được silent drop. Chúng phải đi vào `artifacts/quarantine/quarantine_<run-id>.csv`.
 
-**Policy versioning cutoff (tất cả đọc từ env — không hard-code):**
+Các reason đã thấy trên sample data:
 
-```
-HR_LEAVE_MIN_EFFECTIVE_DATE = 2026-01-01   # Rule 3 cutoff
-FUTURE_DATE_CUTOFF           = 2030-01-01   # Rule 8 cutoff
-CHUNK_MIN_WORD_COUNT         = 5            # E9 threshold
-FRESHNESS_SLA_HOURS          = 24           # freshness SLA
-```
+| Reason | Ý nghĩa |
+|--------|---------|
+| `duplicate_chunk_text` | trùng nội dung sau normalize |
+| `missing_effective_date` | thiếu ngày hiệu lực |
+| `stale_hr_policy_effective_date` | bản HR cũ hơn cutoff |
+| `unknown_doc_id` | nguồn ngoài catalog được chấp thuận |
 
-**Distinction (d):** Thay `HR_LEAVE_MIN_EFFECTIVE_DATE=2025-01-01` trong `.env` → bản HR 2025 (10 ngày) KHÔNG bị quarantine → quyết định clean thay đổi mà không cần sửa code.
+Từ góc nhìn consumer, quarantine CSV là bằng chứng để giải thích vì sao `raw_records != cleaned_records`.
 
----
+## 7. Freshness contract
 
-## 7. Run Evidence (Sprint 1–3)
+| Mục | Giá trị mặc định | Nguồn |
+|-----|------------------|------|
+| SLA | 24 giờ | `FRESHNESS_SLA_HOURS` |
+| Boundary | `latest_exported_at` | manifest |
+| Fallback khi thiếu export timestamp | `run_timestamp` | manifest |
 
-| Run ID | raw | cleaned | quarantine | freshness | Ghi chú |
-|--------|-----|---------|-----------|-----------|---------|
-| `sprint1` | 10 | 6 | 4 | FAIL (120h) | Baseline — 6 rules |
-| `sprint2` | 10 | 6 | 4 | FAIL | Sprint 2 — 9 rules + 9 expectations |
-| `inject-bad` | 10 | 6 | 4 | FAIL | `--no-refund-fix --skip-validate`; `hits_forbidden=yes` cho `q_refund_window` |
-| `clean-baseline` | 10 | 6 | 4 | FAIL | Pipeline chuẩn sau inject; `hits_forbidden=no` |
-| `2026-04-15T08-50Z` | 10 | 6 | 4 | FAIL | Run mới nhất; `embed_upsert count=6` |
+Điểm quan trọng: theo code hiện tại, `WARN` không có nghĩa là dữ liệu quá cũ; `WARN` chỉ xuất hiện khi timestamp trong manifest thiếu hoặc parse lỗi. Nếu timestamp hợp lệ nhưng quá hạn SLA, kết quả là `FAIL`.
+
+## 8. Config qua environment variables
+
+Contract hiện phụ thuộc vào các biến môi trường sau:
+
+| Env var | Default | Tác động |
+|---------|---------|----------|
+| `HR_LEAVE_MIN_EFFECTIVE_DATE` | `2026-01-01` | cutoff loại bản HR cũ |
+| `FUTURE_DATE_CUTOFF` | `2030-01-01` | cutoff cho future-dated policy |
+| `CHUNK_MIN_WORD_COUNT` | `5` | ngưỡng expectation E9 |
+| `FRESHNESS_SLA_HOURS` | `24` | SLA freshness |
+| `CHROMA_COLLECTION` | `day10_kb` | collection publish |
+| `CHROMA_DB_PATH` | `./chroma_db` | nơi lưu vector DB |
+
+## 9. Sample evidence từ artifact hiện có
+
+Từ raw sample 10 dòng:
+
+| Giai đoạn | Số dòng |
+|----------|---------|
+| Raw | 10 |
+| Cleaned | 6 |
+| Quarantine | 4 |
+
+Hai bằng chứng quan trọng:
+
+1. `artifacts/cleaned/cleaned_2026-04-15T08-50Z.csv` chỉ còn refund text đúng `7 ngày làm việc`
+2. `artifacts/eval/eval_clean.csv` cho `q_refund_window` là `contains_expected=yes` và `hits_forbidden=no`
+
+## 10. Change management
+
+Những thay đổi sau phải được xem là thay đổi contract và cần cập nhật docs + YAML:
+
+1. thêm hoặc bỏ một `doc_id`
+2. đổi tên cột cleaned CSV
+3. đổi logic sinh `chunk_id`
+4. đổi boundary freshness
+5. đổi severity của một expectation `halt`

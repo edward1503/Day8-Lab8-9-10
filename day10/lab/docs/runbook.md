@@ -1,222 +1,216 @@
-# Runbook — Lab Day 10: Incident Response (tối giản)
+# Runbook — Day 10 Data Pipeline
 
-**Version:** 1.0  
-**Cập nhật:** 2026-04-15  
-**Owner:** Lab Day 10 Group  
-**Timebox incident triage:** 20 phút trước khi escalate / rollback
+**Owner:** Monitoring / Docs Owner  
+**Entrypoint chính:** `etl_pipeline.py`  
+**Mục tiêu:** chạy pipeline, kiểm tra freshness, và xử lý nhanh các lỗi dữ liệu phổ biến
 
----
+## 1. Lệnh chuẩn
 
-## Incident #1 — Agent trả lời sai cửa sổ hoàn tiền ("14 ngày" thay vì "7 ngày")
+Chạy toàn bộ pipeline:
 
-### Symptom
-
-User / agent trả lời: *"Bạn có 14 ngày làm việc để yêu cầu hoàn tiền"* thay vì 7 ngày.  
-Hoặc eval CSV có: `q_refund_window | hits_forbidden=yes`.
-
----
-
-### Detection
-
-| Metric | Cách kiểm tra | Giá trị báo lỗi |
-|--------|--------------|-----------------|
-| `hits_forbidden` trong eval | `cat artifacts/eval/eval_*.csv` | `yes` cho `q_refund_window` |
-| Expectation E3 | Log pipeline | `expectation[refund_no_stale_14d_window] FAIL (halt)` |
-| Manifest `no_refund_fix` | `cat artifacts/manifests/manifest_<run-id>.json` | `"no_refund_fix": true` |
-| Log pipeline | `tail -50 artifacts/logs/run_<run-id>.log` | `PIPELINE_HALT` hoặc `--skip-validate` |
-
-**Triage nhanh (0–5'):**
 ```bash
-# Kiểm tra run cuối
-ls -lt artifacts/manifests/ | head -3
-cat artifacts/manifests/manifest_<run-id>.json | python -m json.tool
-
-# Xem expectation
-grep "expectation\|PIPELINE\|freshness" artifacts/logs/run_<run-id>.log
-```
-
----
-
-### Diagnosis
-
-| Bước | Thời gian | Việc làm | Kết quả mong đợi |
-|------|-----------|----------|------------------|
-| 1 | 0–5' | Đọc `artifacts/manifests/manifest_<run-id>.json` — kiểm tra `no_refund_fix` và `skipped_validate` | `no_refund_fix: true` → xác nhận pipeline chạy với inject flag |
-| 2 | 5–8' | Mở `artifacts/quarantine/quarantine_<run-id>.csv` — đếm records, check reason | Nếu quarantine ít bất thường → cleaning rules không chạy đủ |
-| 3 | 8–12' | Mở `artifacts/cleaned/cleaned_<run-id>.csv` — tìm "14 ngày làm việc" trong chunk_text | Tìm thấy → Rule 6 không áp dụng; không tìm thấy → vấn đề ở vector store |
-| 4 | 12–15' | Chạy `python eval_retrieval.py --out artifacts/eval/debug_eval.csv` | `hits_forbidden=yes` → vector store vẫn chứa chunk stale |
-| 5 | 15–20' | Kiểm tra Chroma collection trực tiếp | `chroma_db/` có data từ run inject → cần prune + re-embed |
-
-**Root cause phổ biến:**
-
-```
-Pipeline chạy với --no-refund-fix --skip-validate (Sprint 3 inject)
-→ cleaned CSV chứa "14 ngày làm việc"
-→ upsert vào Chroma với chunk_id mới (vì text khác)
-→ run chuẩn sau đó KHÔNG prune chunk cũ đúng cách
-   hoặc chưa chạy lại pipeline chuẩn
-```
-
----
-
-### Mitigation
-
-**Bước 1 — Rollback ngay (< 5'):**
-```bash
-# Re-run pipeline chuẩn (không inject flag)
-cd day10/lab
-python etl_pipeline.py run --run-id fix-$(date -u +%Y-%m-%dT%H-%MZ)
-```
-
-Pipeline chuẩn sẽ:
-1. Apply Rule 6 (fix "14 ngày" → "7 ngày")
-2. Chạy E3 halt (kiểm tra không còn "14 ngày")
-3. Prune stale vectors (xóa chunk_id từ run inject)
-4. Upsert 6 chunks sạch
-
-**Bước 2 — Verify:**
-```bash
-python eval_retrieval.py --out artifacts/eval/after_fix.csv
-grep "q_refund_window" artifacts/eval/after_fix.csv
-# Mong đợi: contains_expected=yes, hits_forbidden=no
-```
-
-**Bước 3 — Nếu pipeline tiếp tục FAIL (expectation halt):**
-```bash
-# Kiểm tra log chi tiết
-tail -100 artifacts/logs/run_fix-*.log
-
-# Thủ công xóa Chroma collection nếu state corrupt
-python -c "
-import chromadb
-client = chromadb.PersistentClient(path='./chroma_db')
-client.delete_collection('day10_kb')
-print('Collection deleted — re-run pipeline to rebuild')
-"
 python etl_pipeline.py run
 ```
 
-**Tạm thời (nếu không fix được trong 20'):**
-- Đặt banner "Thông tin chính sách hoàn tiền đang được cập nhật — vui lòng liên hệ CS trực tiếp"
-- Ghi incident ticket với `run_id` của lần inject và lần fix
+Chạy với run id rõ ràng:
 
----
+```bash
+python etl_pipeline.py run --run-id sprint4-docs
+```
 
-### Prevention
-
-| Hành động | Loại | Chi tiết |
-|-----------|------|---------|
-| Thêm pre-run check | Code | Kiểm tra `--no-refund-fix` không được dùng trong prod; fail fast với warning rõ ràng |
-| Thêm expectation E3 alert | Monitoring | Khi E3 FAIL → gửi alert (hiện tại chỉ log console) |
-| Ghi incident vào `reports/group_report.md` | Process | Ghi `run_id` inject + `run_id` fix + before/after eval để traceability |
-| Thêm `hits_forbidden` check vào CI | Quality gate | Sau mỗi pipeline run, tự động chạy `eval_retrieval.py` và fail nếu `hits_forbidden=yes` |
-| Phân biệt môi trường | Architecture | Sprint 3 inject chỉ chạy trên collection tách biệt (`day10_kb_test`) — không đụng `day10_kb` prod |
-
----
-
-## Incident #2 — Freshness FAIL (age_hours > 24)
-
-### Symptom
-
-Log pipeline: `freshness_check=FAIL {"age_hours": 120.862, "sla_hours": 24.0, "reason": "freshness_sla_exceeded"}`
-
-### Detection
+Kiểm tra freshness của một manifest:
 
 ```bash
 python etl_pipeline.py freshness --manifest artifacts/manifests/manifest_<run-id>.json
-# Output: FAIL {"latest_exported_at": "2026-04-10T08:00:00", "age_hours": 120.862, ...}
 ```
 
-### Diagnosis
-
-| Kiểm tra | Lệnh | Ý nghĩa |
-|----------|------|---------|
-| `latest_exported_at` | `cat manifest_<run-id>.json \| python -m json.tool` | Timestamp export từ nguồn — đây là boundary đo |
-| Delta `exported_at` vs `run_timestamp` | So sánh 2 trường trong manifest | Nếu `run_timestamp` mới nhưng `exported_at` cũ → vấn đề ở nguồn, không phải pipeline |
-| Nguồn CSV | Kiểm tra `data/raw/policy_export_dirty.csv` | `exported_at` column — tất cả rows có cùng timestamp? |
-
-**Lưu ý CSV mẫu:** `exported_at = 2026-04-10` (cố ý cũ để demo SLA breach). Đây là **expected behavior** trong lab.
-
-### Mitigation
+Đánh giá retrieval sau khi đã embed:
 
 ```bash
-# Option 1: Tăng SLA trong .env (chỉ dùng cho lab/demo)
-echo "FRESHNESS_SLA_HOURS=200" >> .env
+python eval_retrieval.py --out artifacts/eval/eval_clean.csv
+```
+
+## 2. Trình tự vận hành chuẩn
+
+1. Chạy `python etl_pipeline.py run`
+2. Ghi lại `run_id`
+3. Mở manifest tương ứng trong `artifacts/manifests/`
+4. Kiểm tra `raw_records`, `cleaned_records`, `quarantine_records`
+5. Chạy `python etl_pipeline.py freshness --manifest ...`
+6. Chạy `python eval_retrieval.py --out ...`
+7. Nếu có inject demo ở Sprint 3, luôn chạy lại một run chuẩn để publish snapshot sạch
+
+## 3. Kết quả mong đợi của một run tốt
+
+Với sample data hiện tại:
+
+| Metric | Giá trị mong đợi |
+|-------|-------------------|
+| `raw_records` | 10 |
+| `cleaned_records` | 6 |
+| `quarantine_records` | 4 |
+| refund text | chỉ còn `7 ngày làm việc` |
+| `q_refund_window` trong eval sạch | `contains_expected=yes`, `hits_forbidden=no` |
+| `q_leave_version` | `top1_doc_expected=yes` |
+
+Lưu ý: sample data cố ý có `exported_at` cũ, nên freshness có thể FAIL dù pipeline vẫn chạy thành công.
+
+## 4. PASS / WARN / FAIL của freshness
+
+Theo code trong `monitoring/freshness_check.py`, logic là:
+
+1. đọc `latest_exported_at` từ manifest
+2. nếu thiếu thì fallback sang `run_timestamp`
+3. so với `now` theo `FRESHNESS_SLA_HOURS`
+
+Ý nghĩa trạng thái:
+
+| Trạng thái | Điều kiện thực tế trong code | Hành động |
+|-----------|-------------------------------|-----------|
+| `PASS` | timestamp hợp lệ và `age_hours <= sla_hours` | tiếp tục dùng snapshot |
+| `FAIL` | timestamp hợp lệ nhưng `age_hours > sla_hours` | re-export data hoặc nới SLA cho lab |
+| `WARN` | không parse được cả `latest_exported_at` lẫn `run_timestamp` | sửa manifest / source timestamp |
+
+Với manifest sample hiện có, `latest_exported_at` là `2026-04-10T08:00:00`, nên nếu SLA là 24 giờ thì kết quả đúng là `FAIL`.
+
+## 5. Checklist khi pipeline lỗi
+
+Nếu `python etl_pipeline.py run` không ra `PIPELINE_OK`, kiểm tra theo thứ tự:
+
+1. raw file có tồn tại không
+2. cleaned và quarantine CSV có được ghi ra không
+3. expectation nào fail
+4. có dùng `--no-refund-fix` hoặc `--skip-validate` không
+5. embed có lỗi dependency / Chroma không
+6. manifest có được ghi không
+
+## 6. Incident 1 — Refund answer sai `14 ngày`
+
+### Dấu hiệu
+
+- người dùng hoặc eval vẫn thấy `14 ngày làm việc`
+- `artifacts/eval/*.csv` có `hits_forbidden=yes` cho `q_refund_window`
+
+### Cách kiểm tra
+
+```bash
+python eval_retrieval.py --out artifacts/eval/check_refund.csv
 python etl_pipeline.py freshness --manifest artifacts/manifests/manifest_<run-id>.json
-# → PASS
-
-# Option 2: Re-export data với timestamp mới (production path)
-# Cập nhật exported_at trong CSV nguồn → re-run pipeline
 ```
 
-### Prevention
+Mở thêm:
 
-- Đo freshness tại **2 boundary**: `ingest_boundary` (khi đọc CSV) + `publish_boundary` (sau embed) → Bonus +1 nếu implement.
-- Alert khi `age_hours > sla * 0.8` (pre-warning threshold trước khi breach thật).
+- `artifacts/cleaned/cleaned_<run-id>.csv`
+- `artifacts/manifests/manifest_<run-id>.json`
 
----
+### Root cause thường gặp
 
-## Incident #3 — Pipeline HALT (expectation fail)
+1. run inject được chạy với `--no-refund-fix --skip-validate`
+2. chưa rerun pipeline chuẩn sau inject
+3. snapshot cũ còn trong collection trước khi run sạch mới hoàn tất
 
-### Symptom
-
-Log: `PIPELINE_HALT: expectation suite failed (halt).`
-
-### Detection
+### Cách xử lý
 
 ```bash
-grep "FAIL (halt)\|PIPELINE_HALT" artifacts/logs/run_<run-id>.log
+python etl_pipeline.py run --run-id refund-fix
+python eval_retrieval.py --out artifacts/eval/eval_after_refund_fix.csv
 ```
 
-### Diagnosis — Theo từng expectation
+Kỳ vọng sau fix:
 
-| Expectation FAIL | Root cause | Action |
-|-----------------|------------|--------|
-| `min_one_row` FAIL | Raw CSV rỗng hoặc tất cả rows bị quarantine | Kiểm tra `quarantine_<run-id>.csv` — tất cả bị loại vì lý do gì? |
-| `no_empty_doc_id` FAIL | Header CSV đổi tên cột (breaking change) | Kiểm tra column names trong raw CSV; cập nhật parser |
-| `refund_no_stale_14d_window` FAIL | Run inject chạy nhưng validate không skip | Đảm bảo không dùng `--no-refund-fix` trong prod |
-| `effective_date_iso_yyyy_mm_dd` FAIL | Rule 2 parse lỗi — format mới không được hỗ trợ | Thêm format vào `_normalize_effective_date()` |
-| `hr_leave_no_stale_10d_annual` FAIL | Bản HR 2025 vào được cleaned (Rule 3 cutoff sai) | Kiểm tra `HR_LEAVE_MIN_EFFECTIVE_DATE` trong `.env` |
-| `no_bom_or_invisible_char_in_cleaned` FAIL | Rule 7 bị bypass hoặc tắt | Kiểm tra `_INVISIBLE_CHARS` và Rule 7 trong cleaning_rules.py |
+- cleaned CSV không còn chuỗi `14 ngày làm việc`
+- eval `q_refund_window` có `hits_forbidden=no`
 
-### Mitigation
+## 7. Incident 2 — Freshness FAIL
+
+### Dấu hiệu
+
+`python etl_pipeline.py freshness --manifest ...` trả `FAIL {...}`
+
+### Cách diễn giải
+
+Nếu manifest có:
+
+- `run_timestamp` mới
+- nhưng `latest_exported_at` cũ
+
+thì pipeline vừa xử lý **một snapshot nguồn đã cũ**. Vấn đề nằm ở source/export, không phải ở bước embed.
+
+### Cách xử lý
+
+Trong lab có 2 cách:
+
+1. re-export dữ liệu với `exported_at` mới hơn rồi chạy lại pipeline
+2. nới `FRESHNESS_SLA_HOURS` trong `.env` để demo PASS trên sample data
+
+Ví dụ:
 
 ```bash
-# Chạy với --skip-validate CHỈ để debug (không prod)
-python etl_pipeline.py run --skip-validate --run-id debug-$(date -u +%Y-%m-%dT%H-%MZ)
-
-# Kiểm tra cleaned CSV để tìm root cause
-python -c "
-import csv
-with open('artifacts/cleaned/cleaned_debug-*.csv') as f:
-    rows = list(csv.DictReader(f))
-    print(f'rows={len(rows)}')
-    for r in rows: print(r)
-"
+python etl_pipeline.py freshness --manifest artifacts/manifests/manifest_2026-04-15T08-50Z.json
 ```
 
-### Prevention
+### Khi nào nên dùng cách 2
 
-- Sau mỗi incident HALT: **thêm ít nhất 1 expectation mới** để bắt trường hợp tương tự trong tương lai (không chỉ blame người).
-- Ghi lý do và expectation mới vào `reports/group_report.md` section "metric_impact".
+Chỉ dùng cho lab/demo. Với production thinking, freshness FAIL là tín hiệu cần refresh source data.
 
----
+## 8. Incident 3 — PIPELINE_HALT
 
-## Tham chiếu nhanh
+### Dấu hiệu
+
+Pipeline dừng với exit code `2` và log có `PIPELINE_HALT`.
+
+### Các nguyên nhân hay gặp
+
+| Expectation fail | Ý nghĩa |
+|------------------|---------|
+| `min_one_row` | tất cả record bị quarantine hoặc raw rỗng |
+| `no_empty_doc_id` | parser/header có vấn đề |
+| `refund_no_stale_14d_window` | refund stale content lọt qua clean |
+| `effective_date_iso_yyyy_mm_dd` | date normalization không đủ |
+| `hr_leave_no_stale_10d_annual` | bản HR cũ còn trong cleaned |
+| `no_bom_or_invisible_char_in_cleaned` | lỗi encoding chưa bị chặn |
+
+### Cách xử lý
+
+1. Mở `artifacts/quarantine/quarantine_<run-id>.csv`
+2. Mở `artifacts/cleaned/cleaned_<run-id>.csv`
+3. Xác định expectation fail nào
+4. Chỉ dùng `--skip-validate` khi demo inject, không dùng cho run publish thật
+
+## 9. Incident 4 — Eval không chạy được
+
+### Dấu hiệu
+
+`eval_retrieval.py` báo lỗi collection hoặc dependency.
+
+### Cách kiểm tra
+
+1. pipeline run có đến bước embed hay không
+2. `CHROMA_DB_PATH` và `CHROMA_COLLECTION` có trùng với lúc publish không
+3. dependencies `chromadb` và `sentence-transformers` đã cài chưa
+
+### Cách xử lý
+
+Chạy lại:
 
 ```bash
-# Pipeline chuẩn
-python etl_pipeline.py run
-
-# Kiểm tra freshness
-python etl_pipeline.py freshness --manifest artifacts/manifests/manifest_<run-id>.json
-
-# Eval retrieval
-python eval_retrieval.py --out artifacts/eval/check_$(date -u +%Y%m%d).csv
-
-# Xem log gần nhất
-ls -t artifacts/logs/ | head -1 | xargs -I{} cat artifacts/logs/{}
-
-# Xem quarantine gần nhất
-ls -t artifacts/quarantine/ | head -1 | xargs -I{} cat artifacts/quarantine/{}
+python etl_pipeline.py run --run-id rebuild-index
+python eval_retrieval.py --out artifacts/eval/eval_rebuild.csv
 ```
+
+## 10. Peer review 3 câu hỏi
+
+Ba câu hỏi này có thể dùng cho Sprint 4 peer review:
+
+1. Nếu `run_timestamp` mới nhưng `latest_exported_at` cũ, team nên sửa pipeline hay sửa source export trước? Vì sao?
+2. Vì sao pipeline phải `prune stale ids` trước khi hoặc cùng lúc publish snapshot mới?
+3. Trong ngữ cảnh nào `--skip-validate` là chấp nhận được, và vì sao không nên dùng nó cho run chính thức?
+
+## 11. Definition of done cho phần vận hành
+
+Sprint 4 phần docs/runbook được xem là xong khi:
+
+1. có một lệnh chạy toàn pipeline
+2. có hướng dẫn đọc PASS / WARN / FAIL của freshness
+3. có ít nhất một playbook xử lý incident
+4. peer review 3 câu hỏi đã được ghi lại trong runbook hoặc group report

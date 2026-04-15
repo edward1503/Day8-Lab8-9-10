@@ -1,161 +1,206 @@
-# Kiến trúc Pipeline — Lab Day 10: Data Pipeline & Observability
+# Pipeline Architecture — Lab Day 10
 
-**Nhóm:** Lab Day 10 Group  
-**Cập nhật:** 2026-04-15  
-**Run ID tham chiếu:** `2026-04-15T08-50Z`
+**Phạm vi:** pipeline dữ liệu cho KB của Day 08 / Day 09  
+**Entrypoint:** `etl_pipeline.py`  
+**Artifact tham chiếu:** `artifacts/manifests/manifest_2026-04-15T08-50Z.json`
 
----
+## 1. Mục tiêu pipeline
 
-## 1. Sơ đồ luồng
+Pipeline này xử lý **raw CSV export** trước khi publish lại vào ChromaDB. Mục tiêu không chỉ là "clean cho đẹp", mà là tạo một **publish boundary rõ ràng** để agent Day 08 / Day 09 chỉ đọc snapshot đã qua:
+
+1. ingest
+2. clean
+3. validate
+4. embed
+5. manifest + freshness check
+
+Với sample run hiện có, manifest cho thấy:
+
+| Metric | Giá trị |
+|-------|--------|
+| `raw_records` | 10 |
+| `cleaned_records` | 6 |
+| `quarantine_records` | 4 |
+| `latest_exported_at` | `2026-04-10T08:00:00` |
+| `freshness` | FAIL với SLA 24h |
+
+## 2. Luồng xử lý end-to-end
 
 ```mermaid
 flowchart LR
-    subgraph SOURCES["Sources"]
-        S1["data/raw/\npolicy_export_dirty.csv"]
-        S2["data/docs/*.txt\n(canonical)"]
-    end
-
-    subgraph PIPELINE["ETL Pipeline (etl_pipeline.py)"]
-        direction TB
-        A["Ingest\nload_raw_csv()\nrun_id ghi log ngay"]
-        B["Transform / Clean\ncleaning_rules.py\n9 rules"]
-        C["Validate\nexpectations.py\n9 expectations"]
-        D["Embed\nChroma upsert\nchunk_id stable key"]
-        E["Manifest\nmanifest_<run_id>.json"]
-        F["Freshness Check\nfreshness_check.py"]
-
-        A --> B
-        B -->|"cleaned_*.csv"| C
-        B -->|"quarantine_*.csv"| Q["artifacts/quarantine/"]
-        C -->|"halt → stop\nwarn → continue"| D
-        D --> E
-        E --> F
-    end
-
-    subgraph SERVING["Serving (Day 08 / 09)"]
-        G["ChromaDB\nday10_kb\ncollection"]
-        H["RAG Agent\n(Day 08)"]
-        I["Multi-Agent\n(Day 09)"]
-        G --> H
-        G --> I
-    end
-
-    subgraph MONITORING["Observability"]
-        M1["run_*.log\n(artifacts/logs/)"]
-        M2["freshness_check\nPASS/WARN/FAIL"]
-        M3["eval_retrieval.py\nbefore/after CSV"]
-    end
-
-    S1 --> A
-    S2 -.->|"canonical reference"| B
-    D --> G
-    A -.->|"run_id=..."| M1
-    F -.->|"freshness_check=..."| M1
-    F --> M2
-    G -.->|"eval"| M3
+    A["Raw export CSV
+data/raw/policy_export_dirty.csv"] --> B["load_raw_csv()"]
+    B --> C["clean_rows()
+transform/cleaning_rules.py"]
+    C --> D["cleaned_<run_id>.csv"]
+    C --> E["quarantine_<run_id>.csv"]
+    D --> F["run_expectations()
+quality/expectations.py"]
+    F -->|pass or warn only| G["cmd_embed_internal()
+Chroma upsert + prune stale ids"]
+    F -->|halt| X["Stop pipeline
+exit code 2"]
+    G --> H["manifest_<run_id>.json"]
+    H --> I["check_manifest_freshness()
+monitoring/freshness_check.py"]
+    G --> J["Collection: day10_kb"]
+    J --> K["eval_retrieval.py"]
+    J --> L["Day 08 / Day 09 retrieval"]
 ```
 
-**Điểm đo freshness:** `latest_exported_at` trong manifest (boundary = publish, không phải `cron_start`).  
-**run_id:** ghi vào log ngay dòng đầu khi `cmd_run` khởi động — trace xuyên suốt từ log → manifest → Chroma metadata.  
-**Quarantine:** mọi record bị loại đều vào `artifacts/quarantine/quarantine_<run_id>.csv` — không silent drop.
+## 3. Thành phần chính
 
----
+| Bước | Hàm / module | Input | Output | Vai trò |
+|------|---------------|-------|--------|--------|
+| Ingest | `load_raw_csv()` | raw CSV | `List[Dict]` | Đọc snapshot từ nguồn |
+| Clean | `clean_rows()` | raw rows | `cleaned`, `quarantine` | Chuẩn hoá, quarantine, fix content |
+| Persist CSV | `write_cleaned_csv()`, `write_quarantine_csv()` | cleaned/quarantine rows | artifact CSV | Tạo evidence before/after |
+| Validate | `run_expectations()` | cleaned rows | `results`, `halt` | Chặn publish nếu lỗi nghiêm trọng |
+| Embed | `cmd_embed_internal()` | cleaned CSV | Chroma collection | Publish snapshot sang vector store |
+| Manifest | `cmd_run()` | metrics của run | JSON manifest | Ghi lineage + counters |
+| Freshness | `check_manifest_freshness()` | manifest | `PASS/WARN/FAIL` | Quan sát độ tươi dữ liệu |
 
-## 2. Ranh giới trách nhiệm
+## 4. Cleaning, validation, publish boundary
 
-| Thành phần | Input | Output | Module | Owner |
-|------------|-------|--------|--------|-------|
-| **Ingest** | `data/raw/policy_export_dirty.csv` | `List[Dict]` rows | `transform/cleaning_rules.py :: load_raw_csv()` | Ingestion Owner |
-| **Transform / Clean** | Raw rows (10 dòng) | `cleaned[]` + `quarantine[]` | `transform/cleaning_rules.py :: clean_rows()` | Cleaning Owner |
-| **Quality Gate** | `cleaned[]` rows | `List[ExpectationResult]`, halt flag | `quality/expectations.py :: run_expectations()` | Cleaning Owner |
-| **Embed** | `cleaned_*.csv` | ChromaDB upsert, prune stale | `etl_pipeline.py :: cmd_embed_internal()` | Embed Owner |
-| **Manifest** | Metrics từ run | `manifest_<run_id>.json` | `etl_pipeline.py :: cmd_run()` | Embed Owner |
-| **Freshness Check** | `manifest_*.json` | `PASS / WARN / FAIL` | `monitoring/freshness_check.py` | Monitoring Owner |
-| **Eval Retrieval** | ChromaDB, test questions | `artifacts/eval/*.csv` | `eval_retrieval.py` | Monitoring Owner |
+### Cleaning
 
----
+`transform/cleaning_rules.py` hiện có 9 rule:
 
-## 3. Idempotency & Rerun
+| Nhóm | Rule | Kết quả |
+|------|------|---------|
+| Allowlist | `doc_id` phải thuộc tập hợp hợp lệ | Quarantine `unknown_doc_id` |
+| Date normalization | `effective_date` phải parse được | Quarantine nếu thiếu/sai format |
+| Version gate | `hr_leave_policy` cũ hơn `HR_LEAVE_MIN_EFFECTIVE_DATE` | Quarantine bản HR stale |
+| Null check | `chunk_text` rỗng | Quarantine |
+| Dedup | trùng `chunk_text` sau normalize | Giữ bản đầu, quarantine bản sau |
+| Content fix | refund window `14 ngày làm việc` -> `7 ngày làm việc` | Sửa text + marker |
+| Encoding guard | BOM / invisible chars | Quarantine |
+| Future cutoff | `effective_date` > `FUTURE_DATE_CUTOFF` | Quarantine |
+| Whitespace normalization | tab/newline/multi-space -> một space | Sửa text + marker |
 
-**Chiến lược:** Upsert theo `chunk_id` ổn định (stable key).
+Sample raw file tạo ra 4 dòng quarantine với các lý do nhìn thấy rõ trong artifact:
 
+1. `duplicate_chunk_text`
+2. `missing_effective_date`
+3. `stale_hr_policy_effective_date`
+4. `unknown_doc_id`
+
+### Validation
+
+`quality/expectations.py` chạy sau clean. Kết quả chia 2 mức:
+
+| Severity | Hành vi |
+|----------|---------|
+| `halt` | dừng pipeline, trả exit code `2` |
+| `warn` | vẫn tiếp tục embed |
+
+Các expectation `halt` quan trọng nhất:
+
+1. `min_one_row`
+2. `no_empty_doc_id`
+3. `refund_no_stale_14d_window`
+4. `effective_date_iso_yyyy_mm_dd`
+5. `hr_leave_no_stale_10d_annual`
+6. `no_bom_or_invisible_char_in_cleaned`
+
+### Publish boundary
+
+Pipeline chỉ publish vào Chroma sau khi:
+
+1. cleaned CSV đã được ghi ra disk
+2. expectation không `halt`
+3. embed hoàn tất
+4. manifest đã được ghi
+
+Điều này tạo boundary rõ ràng giữa:
+
+- dữ liệu nguồn còn lỗi
+- dữ liệu đã đủ điều kiện để agent truy xuất
+
+## 5. Idempotency và snapshot semantics
+
+Phần publish dùng 2 cơ chế quan trọng:
+
+### Stable `chunk_id`
+
+`chunk_id` được tạo bởi `_stable_chunk_id(doc_id, chunk_text, seq)` nên cùng một cleaned snapshot sẽ cho cùng ID. Điều này cho phép `upsert` thay vì tạo bản ghi vector mới mỗi lần rerun.
+
+### Prune stale ids
+
+Trước khi upsert, pipeline đọc toàn bộ `ids` hiện có trong collection và xóa những id không còn nằm trong cleaned run hiện tại.
+
+Ý nghĩa:
+
+1. collection phản ánh đúng **snapshot publish hiện tại**
+2. rerun không làm phình collection
+3. chunk stale từ run inject có thể bị dọn khỏi top-k retrieval
+
+Đây là điểm nối trực tiếp với Sprint 3: nếu chạy `--no-refund-fix --skip-validate`, chunk refund sai có thể lọt vào index; sau đó một run chuẩn sẽ prune snapshot cũ và upsert snapshot sạch.
+
+## 6. Observability artifacts
+
+Sau một lần `python etl_pipeline.py run`, pipeline tạo các artifact sau:
+
+| Loại | Đường dẫn | Mục đích |
+|------|-----------|----------|
+| Cleaned CSV | `artifacts/cleaned/cleaned_<run-id>.csv` | Snapshot sau clean |
+| Quarantine CSV | `artifacts/quarantine/quarantine_<run-id>.csv` | Evidence cho record bị loại |
+| Manifest | `artifacts/manifests/manifest_<run-id>.json` | Metrics, lineage, config flags |
+| Log | `artifacts/logs/run_<run-id>.log` | Dòng sự kiện của pipeline |
+| Eval CSV | `artifacts/eval/*.csv` | Bằng chứng retrieval before/after |
+
+Các field quan trọng nhất trong manifest:
+
+| Field | Ý nghĩa |
+|-------|--------|
+| `run_id` | ID trace xuyên suốt pipeline |
+| `raw_path` | nguồn input |
+| `raw_records` / `cleaned_records` / `quarantine_records` | volume metrics |
+| `latest_exported_at` | timestamp để tính freshness |
+| `no_refund_fix` | run có inject refund bug hay không |
+| `skipped_validate` | có bypass halt gate hay không |
+| `cleaned_csv` | artifact cleaned tương ứng |
+| `chroma_collection` | collection publish |
+
+## 7. Freshness boundary
+
+Freshness không đo từ lúc cron chạy, mà đo từ `latest_exported_at` trong manifest. Trong code:
+
+1. `cmd_run()` lấy `max(exported_at)` từ cleaned rows
+2. ghi vào manifest dưới key `latest_exported_at`
+3. `check_manifest_freshness()` so sánh timestamp đó với `now`
+
+Nếu `latest_exported_at` trống, code fallback sang `run_timestamp`. Vì vậy:
+
+- `PASS`: tuổi dữ liệu `<= sla_hours`
+- `FAIL`: tuổi dữ liệu `> sla_hours`
+- `WARN`: chỉ xảy ra khi cả `latest_exported_at` lẫn `run_timestamp` đều thiếu hoặc parse lỗi
+
+Với sample artifact hiện có, `latest_exported_at` là `2026-04-10T08:00:00`, nên freshness FAIL với SLA mặc định 24 giờ là kết quả đúng.
+
+## 8. Liên hệ với Day 08 / Day 09
+
+Day 10 không thay logic agent; Day 10 thay **chất lượng dữ liệu mà agent đọc**.
+
+Luồng tích hợp là:
+
+1. Day 10 publish cleaned snapshot vào Chroma collection `day10_kb`
+2. `eval_retrieval.py` kiểm tra top-k retrieval trên collection đó
+3. Agent Day 08 / Day 09 có thể dùng cùng collection để trả lời
+
+Nếu pipeline publish snapshot xấu, agent có thể vẫn "nói nghe hợp lý" nhưng retrieval context sẽ chứa chunk stale. Sprint 3 minh hoạ điều này bằng `hits_forbidden=yes` ở `q_refund_window`.
+
+## 9. Một lệnh chạy toàn pipeline
+
+Lệnh chuẩn cho repo này là:
+
+```bash
+python etl_pipeline.py run
 ```
-chunk_id = "{doc_id}_{seq}_{sha256(doc_id|chunk_text|seq)[:16]}"
+
+Sau đó có thể kiểm tra freshness và retrieval:
+
+```bash
+python etl_pipeline.py freshness --manifest artifacts/manifests/manifest_<run-id>.json
+python eval_retrieval.py --out artifacts/eval/eval_clean.csv
 ```
-
-| Tính chất | Cơ chế |
-|-----------|--------|
-| **Idempotent upsert** | Cùng `doc_id + chunk_text + seq` → cùng `chunk_id` → Chroma `upsert` ghi đè metadata, không tạo duplicate |
-| **Prune stale vectors** | Sau mỗi run, `prev_ids = col.get(include=[])` → xóa ID không còn trong `cleaned` → index luôn phản chiếu snapshot hiện tại |
-| **Rerun 2 lần** | Kết quả giống nhau: `embed_prune_removed=0`, `embed_upsert count=6` — không phình collection |
-| **Phân biệt vs UUID** | `uuid4()` mỗi rerun tạo ID mới → duplicate vector → retrieval bị nhiễu chunk trùng nội dung |
-
-**Baseline run kết quả:**
-```
-run_id=2026-04-15T08-50Z
-raw_records=10  →  cleaned_records=6  →  quarantine_records=4
-embed_upsert count=6  collection=day10_kb
-```
-
----
-
-## 4. Liên hệ Day 09
-
-```
-Day 09 (Multi-agent)
-  └── retrieval_worker
-        └── ChromaDB collection: day10_kb
-              ↑
-        Day 10 pipeline publish ở đây
-```
-
-- Day 09 agent kéo từ **cùng ChromaDB collection** (`day10_kb`) mà Day 10 pipeline publish.
-- Khi pipeline Day 10 chạy với `--no-refund-fix` (inject corruption), collection chứa chunk "14 ngày" → agent Day 09 trả lời **sai**.
-- Sau khi pipeline chuẩn chạy lại (prune + upsert), chunk stale bị xóa → agent Day 09 trả lời **đúng**.
-- Bằng chứng: `artifacts/eval/eval_injected.csv` (hits_forbidden=yes) vs `artifacts/eval/eval_clean.csv` (hits_forbidden=no).
-
-**Lưu ý tách biệt:** Day 10 pipeline không dùng corpus `data/docs/*.txt` trực tiếp để embed — nó xử lý export CSV (`policy_export_dirty.csv`) đại diện cho snapshot từ DB/API. Các file `.txt` là canonical reference để verify nội dung.
-
----
-
-## 5. Cleaning Rules & Expectations (9+9)
-
-### Rules (transform/cleaning_rules.py)
-
-| # | Rule | Hành động | Env var |
-|---|------|-----------|---------|
-| 1 | `doc_id` không trong allowlist | Quarantine: `unknown_doc_id` | — |
-| 2 | `effective_date` không parse được | Quarantine: `missing/invalid_effective_date` | — |
-| 3 | `hr_leave_policy` với date < cutoff | Quarantine: `stale_hr_policy_effective_date` | `HR_LEAVE_MIN_EFFECTIVE_DATE` (default 2026-01-01) |
-| 4 | `chunk_text` rỗng | Quarantine: `missing_chunk_text` | — |
-| 5 | Trùng nội dung `chunk_text` | Quarantine: `duplicate_chunk_text` (giữ bản đầu) | — |
-| 6 | `policy_refund_v4` chứa "14 ngày làm việc" | Fix → "7 ngày làm việc" + marker | `--no-refund-fix` flag |
-| 7 | BOM / zero-width space / soft-hyphen | Quarantine: `bom_or_invisible_char_in_text` | — |
-| 8 | `effective_date` vượt FUTURE_DATE_CUTOFF | Quarantine: `effective_date_beyond_future_cutoff` | `FUTURE_DATE_CUTOFF` (default 2030-01-01) |
-| 9 | Whitespace thừa (tab/newline/multi-space) | Fix → normalize + marker | — |
-
-### Expectations (quality/expectations.py)
-
-| # | ID | Severity | Kiểm tra |
-|---|----|----------|---------|
-| E1 | `min_one_row` | **halt** | ≥ 1 dòng sau clean |
-| E2 | `no_empty_doc_id` | **halt** | Không `doc_id` rỗng |
-| E3 | `refund_no_stale_14d_window` | **halt** | Không "14 ngày làm việc" trong refund chunks |
-| E4 | `chunk_min_length_8` | warn | `chunk_text` ≥ 8 ký tự |
-| E5 | `effective_date_iso_yyyy_mm_dd` | **halt** | Đúng regex `^\d{4}-\d{2}-\d{2}$` |
-| E6 | `hr_leave_no_stale_10d_annual` | **halt** | Không "10 ngày phép năm" trong HR chunks |
-| E7 | `no_bom_or_invisible_char_in_cleaned` | **halt** | Cross-check Rule 7 — lưới an toàn thứ 2 |
-| E8 | `no_future_effective_date_beyond_cutoff` | warn | Không date > FUTURE_DATE_CUTOFF trong cleaned |
-| E9 | `chunk_text_min_word_count` | warn | Mỗi chunk ≥ 5 từ (override `CHUNK_MIN_WORD_COUNT`) |
-
----
-
-## 6. Rủi ro đã biết
-
-| Rủi ro | Mức độ | Biện pháp hiện tại | Tồn đọng |
-|--------|--------|-------------------|----------|
-| Freshness FAIL vì CSV mẫu cũ (exported_at = 2026-04-10) | Thấp (có chủ đích) | Documented trong runbook; đặt `FRESHNESS_SLA_HOURS=200` trong `.env` để PASS với data mẫu | Cần export thật với timestamp mới khi prod |
-| ChromaDB không có auth/persistence xuyên session | Trung bình | PersistentClient ghi disk (`./chroma_db`); prune stale sau mỗi run | Chưa có backup/restore script |
-| Parser CSV lỏng (DictReader không báo lỗi khi thiếu cột) | Trung bình | E2 (no_empty_doc_id halt) và E5 (ISO date halt) bắt hầu hết | Chưa validate header schema đầu pipeline |
-| Encoding UTF-8 chỉ check ở Rule 7 (BOM) | Thấp-Trung | Rule 7 + E7 (halt) đảm bảo không chunk lạ lọt vào index | Chưa check toàn bộ codepoint hợp lệ |
-| Rule 9 (whitespace normalize) thay đổi `chunk_text` sau stable `chunk_id` tính | Đã xử lý | `chunk_id` tính trên `fixed_text` (sau normalize) — không đổi khi rerun cùng data | — |
