@@ -1,19 +1,24 @@
 # Báo Cáo Cá Nhân — Lab Day 10: Data Pipeline & Observability
 
-**Họ và tên:** Nguyễn Đôn Đức  
+**Họ và tên:** Nguyễn Đôn Đức
+**ID:** 2A202600145  
 **Vai trò:** Embed & Eval Owner (Vận hành & Kiểm soát chất lượng)  
 **Ngày nộp:** 2026-04-15  
 
 ---
 
-## 1. Tôi phụ trách phần nào? (80–120 từ)
+## 1. Tôi phụ trách phần nào? (~110 từ)
 
 Trong dự án lần này, tôi chịu trách nhiệm chính ở giai đoạn **Vận hành (Operation)** và **Kiểm thử chất lượng (Quality Evaluation)**. Công việc cụ thể bao gồm:
-- Thực thi pipeline nạp dữ liệu (`etl_pipeline.py`) cho cả hai kịch bản: Chạy chuẩn (Clean) và Chạy thử nghiệm lỗi (Injected).
-- Trực tiếp vận hành script đánh giá (`eval_retrieval.py`) để thu thập dữ liệu về độ chính xác của Agent.
-- Phân tích các file kết quả CSV để hoàn thiện báo cáo **Quality Report**, đảm bảo tính minh bạch cho tầng dữ liệu của hệ thống RAG.
 
-Tôi đóng vai trò là chốt chặn cuối cùng để xác nhận dữ liệu đã "sạch" trước khi đưa vào vận hành thực tế.
+- Thực thi `etl_pipeline.py` cho kịch bản **inject** (`run_id=inject-bad`, flag `--no-refund-fix --skip-validate`) và kịch bản **clean** (`run_id=clean-baseline`).
+- Vận hành `eval_retrieval.py` để sinh `artifacts/eval/eval_injected.csv` (trạng thái xấu) và `artifacts/eval/eval_clean.csv` (trạng thái sạch).
+- Đối chiếu hai file CSV để xác nhận cột `hits_forbidden` chuyển từ `yes` → `no` và `top1_doc_expected` của `q_leave_version` giữ nguyên `yes`.
+- Phân tích kết quả và hoàn thiện `docs/quality_report.md` làm bằng chứng Sprint 3.
+
+Tôi đóng vai trò chốt chặn cuối cùng xác nhận dữ liệu đủ điều kiện để agent truy xuất.
+
+**Bằng chứng:** `artifacts/manifests/manifest_inject-bad.json`, `artifacts/manifests/manifest_clean-baseline.json`, `artifacts/eval/eval_injected.csv`, `artifacts/eval/eval_clean.csv`.
 
 ---
 
