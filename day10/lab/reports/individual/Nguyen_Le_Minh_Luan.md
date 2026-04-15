@@ -1,6 +1,7 @@
 # Báo Cáo Cá Nhân — Lab Day 10: Data Pipeline & Observability
 
-**Họ và tên:** Nguyễn Lê Minh Luân  
+**Họ và tên:** Nguyễn Lê Minh Luân 
+**ID:** 2A202600398 
 **Vai trò:** Monitoring / Docs Owner (Sprint 4)  
 **Ngày nộp:** 2026-04-15  
 **Độ dài yêu cầu:** **400–650 từ**
