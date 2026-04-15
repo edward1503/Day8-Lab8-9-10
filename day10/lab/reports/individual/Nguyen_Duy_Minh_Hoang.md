@@ -1,6 +1,6 @@
 # Báo Cáo Cá Nhân — Lab Day 10: Data Pipeline & Observability
 
-**Họ và tên:** Nguyễn Duy Minh Hoàng  
+**Họ và tên:** Nguyễn Duy Minh Hoàng - 2A202600155
 **Vai trò:** Ingestion / Cleaning / Embed Owner  
 **Ngày nộp:** 2026-04-15  
 **Độ dài yêu cầu:** **400–650 từ**
