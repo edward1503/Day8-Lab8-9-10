@@ -82,7 +82,7 @@ expectation[hr_leave_no_stale_10d_annual] OK (halt) :: violations=0
 
 ## 5. Cải tiến tiếp theo (~70 từ)
 
-Nếu có thêm 2 giờ, tôi sẽ:
+Anh Quân đã mở rộng tầng cleaning với 3 rules mới (BOM, future date, whitespace) và 3 expectations (E7–E9), đồng thời đề xuất pydantic validate. Minh Luân đã hoàn thiện docs/runbook và đề xuất freshness 2 boundary + auto-check docs sync. Dựa trên đó, nếu có thêm 2 giờ, tôi sẽ tập trung vào phần pipeline/embed mình phụ trách:
 
-1. **Thêm ≥3 cleaning rules mới** (Sprint 2): rule kiểm tra BOM/encoding UTF-8, rule validate `exported_at` là ISO datetime hợp lệ, và rule normalize whitespace/special characters trong `chunk_text` — mỗi rule phải có `metric_impact` đo được trên bộ inject.
-2. **Thêm ≥2 expectations mới**: kiểm tra `chunk_id` unique trong cleaned output, và kiểm tra volume không giảm quá 50% so với raw (phát hiện parser hỏng toàn bộ).
+1. **Blue/green embed với staging collection:** Thay vì upsert trực tiếp lên `day10_kb` (production), tôi sẽ embed vào collection staging `day10_kb_staging`, chạy eval retrieval trên staging trước, nếu pass thì swap alias — đảm bảo zero-downtime và rollback tức thì khi data lỗi, đúng pattern slide Day 10 (staging → swap alias).
+2. **Parallel embed + validation gate:** Tích hợp kết quả eval retrieval (4 golden queries) thành một quality gate tự động ngay sau embed — nếu `hits_forbidden=yes` trên bất kỳ câu nào thì pipeline tự rollback về collection cũ, không cần chờ on-call đọc runbook.
