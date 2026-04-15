@@ -1,0 +1,8 @@
+chunk_id,doc_id,chunk_text,effective_date,exported_at
+b1,sla_p1_2026,Ticket P1 có SLA phản hồi ban đầu 15 phút và resolution trong 4 giờ.,2026-02-01,2026-04-10T08:00:00
+t7a,it_helpdesk_faq,﻿Chunk bắt đầu bằng BOM — encoding lỗi từ hệ nguồn.,2026-02-01,2026-04-10T08:00:00
+t7b,it_helpdesk_faq,Chunk chứa zero​width space không nhìn thấy được.,2026-02-01,2026-04-10T08:00:00
+t8,policy_refund_v4,Chunk có ngày hiệu lực trong tương lai xa — lỗi nhập liệu.,2099-01-01,2026-04-10T08:00:00
+t9,it_helpdesk_faq,Chunk  có		 tab   và   nhiều   space   liên   tiếp   cần   chuẩn   hóa.,2026-02-01,2026-04-10T08:00:00
+t_e9,sla_p1_2026,SLA: xem phụ lục,2026-02-01,2026-04-10T08:00:00
+t_d,hr_leave_policy,Nhân viên dưới 3 năm kinh nghiệm được 12 ngày phép theo phiên bản thử nghiệm mid-2025.,2025-06-01,2026-04-10T08:00:00

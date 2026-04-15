@@ -1,0 +1,4 @@
+chunk_id,doc_id,chunk_text,effective_date,exported_at
+sla_p1_2026_1_2fe52ef89c679be2,sla_p1_2026,Ticket P1 có SLA phản hồi ban đầu 15 phút và resolution trong 4 giờ.,2026-02-01,2026-04-10T08:00:00
+it_helpdesk_faq_2_56a2326b64eebe5d,it_helpdesk_faq,Chunk có tab và nhiều space liên tiếp cần chuẩn hóa. [cleaned: whitespace_normalized],2026-02-01,2026-04-10T08:00:00
+sla_p1_2026_3_be621a3bafe028e2,sla_p1_2026,SLA: xem phụ lục,2026-02-01,2026-04-10T08:00:00

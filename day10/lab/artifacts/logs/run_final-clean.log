@@ -1,0 +1,59 @@
+run_id=final-clean
+raw_records=10
+cleaned_records=6
+quarantine_records=4
+cleaned_csv=artifacts\cleaned\cleaned_final-clean.csv
+quarantine_csv=artifacts\quarantine\quarantine_final-clean.csv
+expectation[min_one_row] OK (halt) :: cleaned_rows=6
+expectation[no_empty_doc_id] OK (halt) :: empty_doc_id_count=0
+expectation[refund_no_stale_14d_window] OK (halt) :: violations=0
+expectation[chunk_min_length_8] OK (warn) :: short_chunks=0
+expectation[effective_date_iso_yyyy_mm_dd] OK (halt) :: non_iso_rows=0
+expectation[hr_leave_no_stale_10d_annual] OK (halt) :: violations=0
+expectation[no_bom_or_invisible_char_in_cleaned] OK (halt) :: bom_violations=0
+expectation[no_future_effective_date_beyond_cutoff] OK (warn) :: future_date_violations=0 cutoff=2030-01-01
+expectation[chunk_text_min_word_count] OK (warn) :: short_chunks=0 min_words=5
+embed_prune_removed=3
+embed_upsert count=6 collection=day10_kb
+manifest_written=artifacts\manifests\manifest_final-clean.json
+freshness_check=FAIL {"latest_exported_at": "2026-04-10T08:00:00", "age_hours": 121.268, "sla_hours": 24.0, "reason": "freshness_sla_exceeded"}
+PIPELINE_OK
+run_id=final-clean
+raw_records=10
+cleaned_records=6
+quarantine_records=4
+cleaned_csv=artifacts\cleaned\cleaned_final-clean.csv
+quarantine_csv=artifacts\quarantine\quarantine_final-clean.csv
+expectation[min_one_row] OK (halt) :: cleaned_rows=6
+expectation[no_empty_doc_id] OK (halt) :: empty_doc_id_count=0
+expectation[refund_no_stale_14d_window] OK (halt) :: violations=0
+expectation[chunk_min_length_8] OK (warn) :: short_chunks=0
+expectation[effective_date_iso_yyyy_mm_dd] OK (halt) :: non_iso_rows=0
+expectation[hr_leave_no_stale_10d_annual] OK (halt) :: violations=0
+expectation[no_bom_or_invisible_char_in_cleaned] OK (halt) :: bom_violations=0
+expectation[no_future_effective_date_beyond_cutoff] OK (warn) :: future_date_violations=0 cutoff=2030-01-01
+expectation[chunk_text_min_word_count] OK (warn) :: short_chunks=0 min_words=5
+embed_upsert count=6 collection=day10_kb
+manifest_written=artifacts\manifests\manifest_final-clean.json
+freshness_check=FAIL {"latest_exported_at": "2026-04-10T08:00:00", "age_hours": 122.253, "sla_hours": 24.0, "reason": "freshness_sla_exceeded"}
+PIPELINE_OK
+run_id=final-clean
+raw_records=10
+cleaned_records=6
+quarantine_records=4
+cleaned_csv=artifacts\cleaned\cleaned_final-clean.csv
+quarantine_csv=artifacts\quarantine\quarantine_final-clean.csv
+expectation[min_one_row] OK (halt) :: cleaned_rows=6
+expectation[no_empty_doc_id] OK (halt) :: empty_doc_id_count=0
+expectation[refund_no_stale_14d_window] OK (halt) :: violations=0
+expectation[chunk_min_length_8] OK (warn) :: short_chunks=0
+expectation[effective_date_iso_yyyy_mm_dd] OK (halt) :: non_iso_rows=0
+expectation[hr_leave_no_stale_10d_annual] OK (halt) :: violations=0
+expectation[no_bom_or_invisible_char_in_cleaned] OK (halt) :: bom_violations=0
+expectation[no_future_effective_date_beyond_cutoff] OK (warn) :: future_date_violations=0 cutoff=2030-01-01
+expectation[chunk_text_min_word_count] OK (warn) :: short_chunks=0 min_words=5
+embed_prune_removed=3
+embed_upsert count=6 collection=day10_kb
+manifest_written=artifacts\manifests\manifest_final-clean.json
+freshness_check=FAIL {"latest_exported_at": "2026-04-10T08:00:00", "age_hours": 122.606, "sla_hours": 24.0, "reason": "freshness_sla_exceeded"}
+PIPELINE_OK

@@ -1,0 +1,5 @@
+chunk_id,doc_id,chunk_text,effective_date,exported_at,reason,effective_date_normalized,future_date_cutoff_used,hr_leave_min_date_used
+t7a,it_helpdesk_faq,﻿Chunk bắt đầu bằng BOM — encoding lỗi từ hệ nguồn.,2026-02-01,2026-04-10T08:00:00,bom_or_invisible_char_in_text,,,
+t7b,it_helpdesk_faq,Chunk chứa zero​width space không nhìn thấy được.,2026-02-01,2026-04-10T08:00:00,bom_or_invisible_char_in_text,,,
+t8,policy_refund_v4,Chunk có ngày hiệu lực trong tương lai xa — lỗi nhập liệu.,2099-01-01,2026-04-10T08:00:00,effective_date_beyond_future_cutoff,2099-01-01,2030-01-01,
+t_d,hr_leave_policy,Nhân viên dưới 3 năm kinh nghiệm được 12 ngày phép theo phiên bản thử nghiệm mid-2025.,2025-06-01,2026-04-10T08:00:00,stale_hr_policy_effective_date,2025-06-01,,2026-01-01

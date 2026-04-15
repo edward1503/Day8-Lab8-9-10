@@ -18,7 +18,7 @@
 
 ## 2. Before / after retrieval (bắt buộc)
 
-Dẫn link tới: [eval_clean.csv](file:///d:/VSCODE/VINAI/Day8-Lab8-9-10/day10/lab/artifacts/eval/eval_clean.csv) và [eval_injected.csv](file:///d:/VSCODE/VINAI/Day8-Lab8-9-10/day10/lab/artifacts/eval/eval_injected.csv)
+Dẫn link tới: [eval_clean.csv](../artifacts/eval/eval_clean.csv) và [eval_injected.csv](../artifacts/eval/eval_injected.csv)
 
 **Câu hỏi then chốt:** refund window (`q_refund_window`)  
 
