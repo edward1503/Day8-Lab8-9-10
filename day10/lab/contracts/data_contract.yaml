@@ -1,60 +1,170 @@
 # Data contract — Lab Day 10 (tiếp nối artifact CS + IT Helpdesk)
-# Sinh viên bổ sung owner, SLA freshness, và nguồn canonical.
+# Cập nhật Sprint 2: bổ sung owner, SLA, nguồn canonical, và các rules/expectations mới.
 
-version: "1.0"
+version: "1.1"
 dataset: "kb_chunk_export"
 owner_team: "Lab Day 10 Group"
+owner_contact: "anhquan7303qqq@gmail.com"
+last_updated: "2026-04-15"
 
 schema_cleaned:
   chunk_id:
     type: string
     required: true
-    description: "ID ổn định sau clean (thường hash hoặc doc_id + seq)"
+    description: "ID ổn định sau clean (sha256 của doc_id|chunk_text|seq, 16 ký tự)"
   doc_id:
     type: string
     required: true
     description: "Khóa logic tài liệu nguồn (vd policy_refund_v4)"
+    constraints:
+      enum: [policy_refund_v4, sla_p1_2026, it_helpdesk_faq, hr_leave_policy]
   chunk_text:
     type: string
     required: true
     constraints:
       min_length: 8
+      min_word_count: 5        # đọc bởi E9 — có thể override qua CHUNK_MIN_WORD_COUNT env
+      no_bom: true             # đọc bởi E7 — BOM (\ufeff, \u200b, \u00ad) bị quarantine
   effective_date:
     type: date
+    format: "YYYY-MM-DD"
     required: true
+    constraints:
+      min: "2026-01-01"        # override qua HR_LEAVE_MIN_EFFECTIVE_DATE cho hr_leave_policy
+      max: "2030-01-01"        # override qua FUTURE_DATE_CUTOFF env
   exported_at:
     type: datetime
-    required: true
+    required: false
+    description: "Timestamp export từ hệ nguồn — dùng cho freshness SLA"
 
 quality_rules:
-  - id: "no_duplicate_chunk_text"
-    severity: "warn"
-  - id: "no_stale_refund_window"
-    description: "Không được để chunk policy refund chứa cửa sổ 14 ngày (lệch so với v4 = 7 ngày)"
+  # Baseline rules
+  - id: "rule_1_allowlist_doc_id"
+    description: "Quarantine doc_id không thuộc allowlist"
+    severity: "quarantine"
+    failure_mode: "unknown_doc_id"
+
+  - id: "rule_2_normalize_effective_date"
+    description: "Chuẩn hóa DD/MM/YYYY sang YYYY-MM-DD; quarantine nếu không parse được"
+    severity: "quarantine"
+    failure_modes: ["missing_effective_date", "invalid_effective_date_format"]
+
+  - id: "rule_3_hr_stale_version"
+    description: "Quarantine hr_leave_policy có effective_date < HR_LEAVE_MIN_EFFECTIVE_DATE"
+    severity: "quarantine"
+    env_var: "HR_LEAVE_MIN_EFFECTIVE_DATE"
+    default_cutoff: "2026-01-01"
+    failure_mode: "stale_hr_policy_effective_date"
+    note: "Đọc từ env — Distinction (d): thay env var để đổi cutoff không cần sửa code"
+
+  - id: "rule_4_empty_chunk_text"
+    description: "Quarantine chunk_text rỗng hoặc missing"
+    severity: "quarantine"
+    failure_mode: "missing_chunk_text"
+
+  - id: "rule_5_deduplicate"
+    description: "Loại trùng nội dung chunk_text (giữ bản đầu tiên)"
+    severity: "quarantine"
+    failure_mode: "duplicate_chunk_text"
+
+  - id: "rule_6_fix_stale_refund"
+    description: "Fix policy_refund_v4 chứa '14 ngày làm việc' → '7 ngày làm việc'"
+    severity: "fix"
+    marker: "[cleaned: stale_refund_window]"
+    flag: "apply_refund_window_fix"
+
+  # Rules mới Sprint 2
+  - id: "rule_7_bom_invisible_char"
+    description: "Quarantine chunk_text chứa BOM (\\ufeff), zero-width space (\\u200b), hoặc soft-hyphen (\\u00ad)"
+    severity: "quarantine"
+    failure_mode: "bom_or_invisible_char_in_text"
+    metric_impact: "inject 1 row BOM → quarantine_records +1; cross-check bởi E7"
+
+  - id: "rule_8_future_date_cutoff"
+    description: "Quarantine effective_date vượt FUTURE_DATE_CUTOFF"
+    severity: "quarantine"
+    env_var: "FUTURE_DATE_CUTOFF"
+    default_cutoff: "2030-01-01"
+    failure_mode: "effective_date_beyond_future_cutoff"
+    metric_impact: "inject row '2099-01-01' → quarantine_records +1; thay FUTURE_DATE_CUTOFF=2025-01-01 → thêm rows bị quarantine"
+    note: "Đọc từ env — không hard-code ngày cố định"
+
+  - id: "rule_9_whitespace_normalization"
+    description: "Chuẩn hóa space/tab/newline liên tiếp trong chunk_text thành 1 space"
+    severity: "fix"
+    marker: "[cleaned: whitespace_normalized]"
+    metric_impact: "inject row có tab thừa → cleaned text thay đổi, marker xuất hiện; embedding similarity cải thiện"
+
+expectations:
+  - id: "E1_min_one_row"
     severity: "halt"
+  - id: "E2_no_empty_doc_id"
+    severity: "halt"
+  - id: "E3_refund_no_stale_14d_window"
+    severity: "halt"
+  - id: "E4_chunk_min_length_8"
+    severity: "warn"
+  - id: "E5_effective_date_iso_yyyy_mm_dd"
+    severity: "halt"
+  - id: "E6_hr_leave_no_stale_10d_annual"
+    severity: "halt"
+  # Mới Sprint 2
+  - id: "E7_no_bom_or_invisible_char_in_cleaned"
+    severity: "halt"
+    description: "Cross-check Rule 7 — nếu cleaning bypass thì expectation này vẫn bắt được"
+    metric_impact: "bypass Rule 7 + inject BOM → E7 FAIL halt"
+  - id: "E8_no_future_effective_date_beyond_cutoff"
+    severity: "warn"
+    env_var: "FUTURE_DATE_CUTOFF"
+    default_cutoff: "2030-01-01"
+    metric_impact: "bypass Rule 8 + inject future date → E8 WARN"
+  - id: "E9_chunk_text_min_word_count"
+    severity: "warn"
+    env_var: "CHUNK_MIN_WORD_COUNT"
+    default: 5
+    metric_impact: "inject chunk < 5 từ → E9 WARN"
 
 freshness:
-  measured_at: "publish"  # ingest | cleaned | publish
+  measured_at: "publish"        # boundary: export từ nguồn
   sla_hours: 24
-  alert_channel: "pipeline-alerts (console log)"
+  alert_channel: "console log (pipeline run)"
+  note: >
+    CSV mẫu có exported_at cũ (~6 ngày) → freshness_check=FAIL là hợp lý.
+    SLA áp cho 'data snapshot' từ hệ nguồn, không phải cho thời điểm chạy pipeline.
+    Để PASS: cập nhật FRESHNESS_SLA_HOURS=200 trong .env hoặc export lại data với timestamp mới.
 
 canonical_sources:
   - path: "data/docs/policy_refund_v4.txt"
     doc_id: "policy_refund_v4"
+    owner: "CS Policy Team"
+    update_frequency: "per policy revision"
+    failure_mode: "stale refund window (14 → 7 ngày)"
+
   - path: "data/docs/sla_p1_2026.txt"
     doc_id: "sla_p1_2026"
+    owner: "IT Operations"
+    update_frequency: "annual"
+    failure_mode: "SLA thay đổi khi hợp đồng mới"
+
   - path: "data/docs/it_helpdesk_faq.txt"
     doc_id: "it_helpdesk_faq"
+    owner: "IT Helpdesk"
+    update_frequency: "quarterly"
+    failure_mode: "policy bảo mật thay đổi (số lần đăng nhập sai, v.v.)"
+
   - path: "data/docs/hr_leave_policy.txt"
     doc_id: "hr_leave_policy"
+    owner: "HR Department"
+    update_frequency: "annual (đầu năm)"
+    failure_mode: "conflict version (10 ngày 2025 vs 12 ngày 2026)"
 
-# Baseline allowlist export — nhóm mở rộng doc mới phải đồng bộ cleaning_rules + contract.
 allowed_doc_ids:
   - policy_refund_v4
   - sla_p1_2026
   - it_helpdesk_faq
   - hr_leave_policy
 
-# Merit/Distinction: có thể đưa cutoff versioning vào env và tham chiếu ở đây (tránh hard-code trong code).
 policy_versioning:
-  hr_leave_min_effective_date: "2026-01-01"
+  hr_leave_min_effective_date: "2026-01-01"   # override qua env HR_LEAVE_MIN_EFFECTIVE_DATE
+  future_date_cutoff: "2030-01-01"             # override qua env FUTURE_DATE_CUTOFF
+  note: "Distinction (d): tất cả cutoff date đọc từ env — không hard-code trong code"
